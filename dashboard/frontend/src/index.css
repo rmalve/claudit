@@ -1,0 +1,112 @@
+@import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Source+Serif+4:ital,opsz,wght@0,8..60,200..900;1,8..60,200..900&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap');
+
+/* ─── Brand tokens: light mode (default) ─── */
+:root {
+  --brand-bg-primary: #FAF9F5;
+  --brand-bg-secondary: #F0EEE6;
+  --brand-bg-tertiary: #E8E6DC;
+  --brand-surface: #FFFFFF;
+  --brand-text-primary: #141413;
+  --brand-text-secondary: #3D3D3A;
+  --brand-text-tertiary: #5E5D59;
+  --brand-accent: #D97757;
+  --brand-accent-dark: #C6613F;
+  --brand-accent-light: #E8A48D;
+  --brand-border: rgba(20, 20, 19, 0.10);
+  --brand-border-strong: rgba(20, 20, 19, 0.20);
+  --brand-blue: #3B82D9;
+  --brand-green: #4D8C00;
+  --brand-red: #D44A4A;
+  --brand-shadow: 0 2px 8px hsl(0 0% 0% / 8%);
+  --brand-shadow-lg: 0 4px 16px hsl(0 0% 0% / 12%);
+
+  /* Chart palette */
+  --chart-clay: #D97757;
+  --chart-olive: #6B8F3C;
+  --chart-sky: #3B82D9;
+  --chart-heather: #8B6AAE;
+  --chart-fig: #A0527A;
+  --chart-cactus: #4A8C6F;
+  --chart-sand: #C4A95B;
+  --chart-slate: #7A7A72;
+
+  /* Layout */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 16px;
+  --radius-pill: 9999px;
+  --nav-height: 64px;
+
+  /* Font stacks */
+  --font-sans: 'DM Sans', system-ui, -apple-system, sans-serif;
+  --font-serif: 'Source Serif 4', Georgia, serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+/* ─── Brand tokens: dark mode ─── */
+:root.dark {
+  --brand-bg-primary: #1F1F1E;
+  --brand-bg-secondary: #171716;
+  --brand-bg-tertiary: #121212;
+  --brand-surface: #262625;
+  --brand-text-primary: #FAF9F5;
+  --brand-text-secondary: #C0BFB4;
+  --brand-text-tertiary: #949389;
+  --brand-border: rgba(224, 223, 216, 0.10);
+  --brand-border-strong: rgba(224, 223, 216, 0.20);
+  --brand-shadow: 0 2px 8px hsl(0 0% 0% / 24%);
+  --brand-shadow-lg: 0 4px 16px hsl(0 0% 0% / 32%);
+}
+
+/* ─── Tailwind v4 theme extension ─── */
+@theme {
+  --color-brand-bg: var(--brand-bg-primary);
+  --color-brand-bg-secondary: var(--brand-bg-secondary);
+  --color-brand-bg-tertiary: var(--brand-bg-tertiary);
+  --color-brand-surface: var(--brand-surface);
+  --color-brand-text: var(--brand-text-primary);
+  --color-brand-text-secondary: var(--brand-text-secondary);
+  --color-brand-text-tertiary: var(--brand-text-tertiary);
+  --color-brand-accent: var(--brand-accent);
+  --color-brand-accent-dark: var(--brand-accent-dark);
+  --color-brand-accent-light: var(--brand-accent-light);
+  --color-brand-border: var(--brand-border);
+  --color-brand-border-strong: var(--brand-border-strong);
+  --color-brand-blue: var(--brand-blue);
+  --color-brand-green: var(--brand-green);
+  --color-brand-red: var(--brand-red);
+  --font-family-sans: var(--font-sans);
+  --font-family-serif: var(--font-serif);
+  --font-family-mono: var(--font-mono);
+}
+
+/* ─── Global defaults ─── */
+body {
+  margin: 0;
+  background-color: var(--brand-bg-primary);
+  color: var(--brand-text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background-color: rgba(217, 119, 87, 0.25);
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--brand-border-strong);
+  border-radius: var(--radius-pill);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--brand-text-tertiary);
+}

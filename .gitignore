@@ -1,0 +1,85 @@
+# ── Secrets ──
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+!*.public.key
+config/redis-acl.conf
+config/projects.json
+.env.audit
+.env.local
+
+# ── Internal development notes ──
+docs/superpowers/
+CHECKPOINT-*.md
+TEST-RUN-*.md
+TEST-RUN-*-REPORT-*.md
+*.checkpoint
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# ── Node / Frontend ──
+node_modules/
+dashboard/frontend/dist/
+dashboard/frontend/.vite/
+dashboard/frontend/npm-debug.log*
+dashboard/frontend/yarn-debug.log*
+
+# ── Databases & runtime state ──
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+data/*
+!data/.gitkeep
+qdrant_storage/
+redis_data/
+
+# ── Claude Code / MCP / Superpowers runtime ──
+.claude/settings.local.json
+.playwright-mcp/
+.superpowers/
+.brainstorm/
+.fastembed/
+models/
+
+# ── IDE / OS ──
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Logs ──
+*.log
+logs/
+
+# ── Project-specific generated artifacts ──
+observability/standing_directives.md
+!observability/standing_directives.md.example
