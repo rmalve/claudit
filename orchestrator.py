@@ -544,7 +544,8 @@ class Orchestrator:
             logger.info("═══ Phase 6: Archiving streams to SQLite ═══")
             try:
                 from observability.archiver import StreamArchiver
-                archiver = StreamArchiver()
+                from observability.qdrant_backend import QdrantBackend
+                archiver = StreamArchiver(qdrant=QdrantBackend())
                 try:
                     results = archiver.archive_cycle(audit_cycle_id=self.audit_cycle_id)
                     logger.info("Archive results: %s", results)

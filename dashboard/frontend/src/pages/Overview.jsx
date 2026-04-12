@@ -56,6 +56,7 @@ export default function Overview() {
   const { data: typeData } = useApi(`/api/findings/by-type?${projectQuery}${dateParams}`, { refreshInterval: 15000 })
   const { data: confData } = useApi(`/api/findings/by-confidence?${projectQuery}${dateParams}`, { refreshInterval: 15000 })
   const { data: dirStatusData } = useApi(`/api/directives/by-status?${projectQuery}`, { refreshInterval: 15000 })
+  const { data: clusterData } = useApi(`/api/findings/clusters?${projectQuery}`, { refreshInterval: 30000 })
 
   const allProjects = stats?.active_projects || []
   const sev = stats?.findings_by_severity || {}
@@ -118,14 +119,15 @@ export default function Overview() {
     return Array.from(statuses)
   }, [directiveBarData])
 
-  const heatmapPlaceholder = useMemo(() => {
-    const categories = ['Auth/Security', 'Data Quality', 'Performance', 'Scope Violation', 'Documentation']
-    return categories.map(cat => ({
-      category: cat,
-      findings: Math.floor(Math.random() * 10),
-      sessions: Math.floor(Math.random() * 5) + 1,
-    }))
-  }, [])
+  const clusterChartData = useMemo(() =>
+    (clusterData?.clusters || []).map(c => ({
+      category: c.short_label,
+      findings: c.finding_count,
+      sessions: c.session_count,
+      finding_ids: c.finding_ids,
+    })),
+    [clusterData]
+  )
 
   const handleSeverityPieClick = (entry) => {
     if (entry?.name) navigate(`/findings?severity=${entry.name}`)
@@ -140,8 +142,10 @@ export default function Overview() {
     const status = event?.dataKey || ''
     if (status && data?.name) navigate(`/directives?type=${data.name}&status=${status}`)
   }
-  const handleHeatmapClick = (data) => {
-    if (data?.category) navigate(`/findings?cluster=${encodeURIComponent(data.category)}`)
+  const handleClusterClick = (data) => {
+    if (data?.finding_ids?.length) {
+      navigate(`/findings?cluster_ids=${data.finding_ids.join(',')}`)
+    }
   }
 
   const RateTooltip = ({ active, payload, label }) => {
@@ -366,33 +370,27 @@ export default function Overview() {
             )}
           </Paper>
 
-          <Paper sx={{ p: 2, position: 'relative' }}>
+          <Paper sx={{ p: 2 }}>
             <Typography variant="subtitle2" color="text.disabled" gutterBottom>
               MOST PREVALENT FINDING CLUSTERS
             </Typography>
-            <Box
-              sx={{
-                position: 'absolute', top: 8, right: 12,
-                bgcolor: 'warning.main', color: 'text.primary',
-                px: 1, py: 0.25, borderRadius: 1, opacity: 0.8,
-              }}
-            >
-              <Typography variant="caption" fontWeight="bold">PLACEHOLDER</Typography>
-            </Box>
-            <ResponsiveContainer width="100%" height={280}>
-              <BarChart data={heatmapPlaceholder} layout="vertical">
-                <CartesianGrid strokeDasharray="3 3" stroke={gridColor} />
-                <XAxis type="number" tick={tickStyle} />
-                <YAxis dataKey="category" type="category" tick={tickStyle} width={120} />
-                <Tooltip contentStyle={getTooltipStyle()} />
-                <Legend />
-                <Bar dataKey="findings" fill="#D44A4A" name="Findings" onClick={handleHeatmapClick} style={{ cursor: 'pointer' }} radius={[0, 4, 4, 0]} />
-                <Bar dataKey="sessions" fill="#3B82D9" name="Affected Sessions" onClick={handleHeatmapClick} style={{ cursor: 'pointer' }} radius={[0, 4, 4, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-            <Typography variant="caption" color="text.disabled" sx={{ display: 'block', mt: 1 }}>
-              Future: k-nearest neighbor clustering of findings with similar root causes and remediation patterns.
-            </Typography>
+            {clusterChartData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={280}>
+                <BarChart data={clusterChartData} layout="vertical">
+                  <CartesianGrid strokeDasharray="3 3" stroke={gridColor} />
+                  <XAxis type="number" tick={tickStyle} />
+                  <YAxis dataKey="category" type="category" tick={tickStyle} width={160} />
+                  <Tooltip contentStyle={getTooltipStyle()} />
+                  <Legend />
+                  <Bar dataKey="findings" fill="#D44A4A" name="Findings" onClick={handleClusterClick} style={{ cursor: 'pointer' }} radius={[0, 4, 4, 0]} />
+                  <Bar dataKey="sessions" fill="#3B82D9" name="Affected Sessions" onClick={handleClusterClick} style={{ cursor: 'pointer' }} radius={[0, 4, 4, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <Box sx={{ height: 280, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <Typography color="text.disabled">No findings to cluster</Typography>
+              </Box>
+            )}
           </Paper>
         </Box>
 
