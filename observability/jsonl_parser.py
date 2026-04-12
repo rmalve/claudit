@@ -161,13 +161,15 @@ def find_subagent_jsonls(session_id: str, project_root: str | None = None) -> li
     return results
 
 
-def _parse_entries(jsonl_path: str) -> tuple[list[dict], str]:
-    """Stream-read a JSONL file and return parsed entries + session_id.
+def _parse_entries(jsonl_path: str) -> tuple[list[dict], list[dict], str]:
+    """Stream-read a JSONL file and return all entries, conversation entries, and session_id.
 
-    Only keeps user/assistant entries (the conversation).
-    Returns (entries, session_id).
+    Returns (all_entries, conversation_entries, session_id).
+    all_entries: every entry with a uuid (needed for parentUuid chain resolution).
+    conversation_entries: only user/assistant entries (for content extraction).
     """
-    entries = []
+    all_entries = []
+    conversation_entries = []
     session_id = ""
 
     with open(jsonl_path, encoding="utf-8", errors="replace") as f:
@@ -185,20 +187,26 @@ def _parse_entries(jsonl_path: str) -> tuple[list[dict], str]:
             if not session_id:
                 session_id = d.get("sessionId", "")
 
+            # Keep all entries that have uuid/parentUuid for chain resolution
+            if d.get("uuid") or d.get("parentUuid") or d.get("promptId"):
+                all_entries.append(d)
+
             if entry_type in ("user", "assistant"):
-                entries.append(d)
+                conversation_entries.append(d)
 
-    return entries, session_id
+    return all_entries, conversation_entries, session_id
 
 
-def _resolve_prompt_ids(entries: list[dict]) -> dict[str, str]:
+def _resolve_prompt_ids(all_entries: list[dict]) -> dict[str, str]:
     """Build uuid -> promptId map by propagating through parentUuid chains.
 
+    Uses ALL entry types (including attachments, system, etc.) so that
+    chains like assistant -> attachment -> user resolve correctly.
     Single forward pass — entries are chronologically ordered in JSONL.
     """
     uuid_to_prompt = {}
 
-    for entry in entries:
+    for entry in all_entries:
         uuid = entry.get("uuid") or ""
         prompt_id = entry.get("promptId") or ""
         parent_uuid = entry.get("parentUuid") or ""
@@ -254,7 +262,17 @@ def _group_into_turns(entries: list[dict], uuid_to_prompt: dict[str, str], sessi
 
                 if entry_type == "user" and block_type == "text":
                     text = block.get("text", "")
+                    # Prefer actual user input over system-injected context
+                    is_system_context = text.startswith("<") and any(
+                        text.startswith(tag) for tag in (
+                            "<ide_opened_file>", "<ide_selection>",
+                            "<system-reminder>", "<user-prompt-submit-hook>",
+                        )
+                    )
                     if text and not turn.user_text:
+                        turn.user_text = text[:2000]
+                    if text and not is_system_context:
+                        # Override system context with real user input
                         turn.user_text = text[:2000]
                     if text:
                         turn.events.append(TurnEvent(
@@ -350,9 +368,9 @@ def parse_session_jsonl(jsonl_path: str) -> SessionConversation:
     """
     start_time = time.monotonic()
 
-    entries, session_id = _parse_entries(jsonl_path)
-    uuid_to_prompt = _resolve_prompt_ids(entries)
-    turns = _group_into_turns(entries, uuid_to_prompt, session_id)
+    all_entries, conversation_entries, session_id = _parse_entries(jsonl_path)
+    uuid_to_prompt = _resolve_prompt_ids(all_entries)
+    turns = _group_into_turns(conversation_entries, uuid_to_prompt, session_id)
 
     parse_time = (time.monotonic() - start_time) * 1000
 
@@ -364,13 +382,13 @@ def parse_session_jsonl(jsonl_path: str) -> SessionConversation:
         session_id=session_id,
         project_hash=project_hash,
         turns=turns,
-        total_entries=len(entries),
+        total_entries=len(conversation_entries),
         parse_time_ms=round(parse_time, 1),
     )
 
     logger.info(
         "Parsed %s: %d entries -> %d turns in %.1fms",
-        session_id[:12], len(entries), len(turns), parse_time,
+        session_id[:12], len(conversation_entries), len(turns), parse_time,
     )
 
     return conversation
@@ -378,14 +396,14 @@ def parse_session_jsonl(jsonl_path: str) -> SessionConversation:
 
 def parse_subagent_jsonl(jsonl_path: str, meta: dict | None = None) -> SubagentConversation:
     """Parse a subagent JSONL file."""
-    entries, session_id = _parse_entries(jsonl_path)
-    uuid_to_prompt = _resolve_prompt_ids(entries)
-    turns = _group_into_turns(entries, uuid_to_prompt, session_id)
+    all_entries, conversation_entries, session_id = _parse_entries(jsonl_path)
+    uuid_to_prompt = _resolve_prompt_ids(all_entries)
+    turns = _group_into_turns(conversation_entries, uuid_to_prompt, session_id)
 
     # Extract agent_id from first entry
     agent_id = ""
-    if entries:
-        agent_id = entries[0].get("agentId", "") or ""
+    if all_entries:
+        agent_id = all_entries[0].get("agentId", "") or ""
 
     meta = meta or {}
 
