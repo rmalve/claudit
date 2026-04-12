@@ -28,14 +28,15 @@ SESSIONS = "sessions"
 PROMPTS = "prompts"
 CODE_CHANGES = "code_changes"
 BUGS = "bugs"
+FINDINGS = "findings"
 DATA_QUALITY = "data_quality"
 SESSION_TIMELINES = "session_timelines"
 CONVERSATION_TURNS = "conversation_turns"
 
 ALL_COLLECTIONS = [
     TOOL_CALLS, HALLUCINATIONS, AGENT_SPAWNS, EVALS, SESSIONS,
-    PROMPTS, CODE_CHANGES, BUGS, DATA_QUALITY, SESSION_TIMELINES,
-    CONVERSATION_TURNS,
+    PROMPTS, CODE_CHANGES, BUGS, FINDINGS, DATA_QUALITY,
+    SESSION_TIMELINES, CONVERSATION_TURNS,
 ]
 
 EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
@@ -43,6 +44,69 @@ EMBEDDING_DIM = 384
 
 # Recognized range operator suffixes
 _RANGE_OPS = {"__gte", "__lte", "__gt", "__lt"}
+
+# Words too common to be useful in cluster labels
+_STOP_WORDS = {
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "shall", "can", "need", "must", "ought",
+    "in", "on", "at", "to", "for", "of", "with", "by", "from", "as",
+    "into", "through", "during", "before", "after", "above", "below",
+    "and", "but", "or", "nor", "not", "no", "so", "if", "then", "than",
+    "that", "this", "these", "those", "it", "its", "all", "each", "every",
+    "both", "few", "more", "most", "other", "some", "such", "only",
+    "same", "also", "very", "just", "about", "between", "over", "under",
+    "finding", "findings", "found", "detected", "observed", "noted",
+    "session", "agent", "across", "which", "when", "where", "how",
+}
+
+_AUDITOR_DISPLAY = {
+    "trace": "Trace",
+    "safety": "Safety",
+    "policy": "Policy",
+    "hallucination": "Hallucination",
+    "drift": "Drift",
+    "cost": "Cost",
+}
+
+
+_CLUSTER_CATEGORY = {
+    ("trace", "violation"): "Sequence Violations",
+    ("trace", "anomaly"): "Trace Anomalies",
+    ("trace", "trend"): "Behavioral Trends",
+    ("trace", "info"): "Session Reconstruction",
+    ("safety", "violation"): "Security Violations",
+    ("safety", "anomaly"): "Safety Concerns",
+    ("safety", "trend"): "Safety Trends",
+    ("safety", "info"): "Safety Review",
+    ("policy", "violation"): "Policy Violations",
+    ("policy", "anomaly"): "Governance Anomalies",
+    ("policy", "trend"): "Compliance Trends",
+    ("policy", "info"): "Policy Compliance",
+    ("hallucination", "violation"): "Factual Errors",
+    ("hallucination", "anomaly"): "Hallucination Risks",
+    ("hallucination", "trend"): "Accuracy Trends",
+    ("hallucination", "info"): "Factual Verification",
+    ("drift", "violation"): "Drift Violations",
+    ("drift", "anomaly"): "Behavioral Drift",
+    ("drift", "trend"): "Drift Patterns",
+    ("drift", "info"): "Baseline Analysis",
+    ("cost", "violation"): "Efficiency Violations",
+    ("cost", "anomaly"): "Cost Anomalies",
+    ("cost", "trend"): "Efficiency Trends",
+    ("cost", "info"): "Cost Analysis",
+}
+
+
+def _build_cluster_label(claims: list[str], auditor: str, finding_type: str) -> str:
+    """Build a concise chart label from auditor type and finding type."""
+    key = (auditor.lower(), finding_type.lower())
+    if key in _CLUSTER_CATEGORY:
+        return _CLUSTER_CATEGORY[key]
+
+    prefix = _AUDITOR_DISPLAY.get(auditor, auditor.title())
+    suffix = finding_type.title() if finding_type else "General"
+    return f"{prefix}: {suffix}"
 
 
 def build_query_filter(filters: dict | None) -> "models.Filter | None":
@@ -267,6 +331,13 @@ class QdrantBackend:
         )
         self._upsert(BUGS, text, payload, point_id=point_id)
 
+    def add_finding(self, text: str, payload: dict) -> None:
+        point_id = self._deterministic_id(
+            "finding",
+            payload.get("finding_id", ""),
+        )
+        self._upsert(FINDINGS, text, payload, point_id=point_id)
+
     def add_data_quality_event(self, text: str, payload: dict) -> None:
         point_id = self._deterministic_id(
             "data_quality",
@@ -470,6 +541,7 @@ class QdrantBackend:
         collection: str,
         filters: dict[str, Any] | None = None,
         limit: int = 2000,
+        with_vectors: bool = False,
     ) -> list[dict]:
         """Return all points matching a filter using scroll (no embedding).
 
@@ -487,15 +559,18 @@ class QdrantBackend:
                 limit=min(100, limit - len(all_points)),
                 offset=offset,
                 with_payload=True,
-                with_vectors=False,
+                with_vectors=with_vectors,
             )
 
             for r in results:
-                all_points.append({
+                point = {
                     "id": str(r.id),
                     "payload": r.payload,
                     "text": r.payload.get("_text", ""),
-                })
+                }
+                if with_vectors and r.vector is not None:
+                    point["vector"] = r.vector
+                all_points.append(point)
 
             if next_offset is None or len(all_points) >= limit:
                 break
@@ -506,6 +581,101 @@ class QdrantBackend:
     def get_collection_count(self, collection: str) -> int:
         info = self._client.get_collection(collection)
         return info.points_count
+
+    # ── Finding clusters ──
+
+    def cluster_findings(
+        self,
+        filters: dict[str, Any] | None = None,
+        distance_threshold: float = 0.20,
+        top_k: int = 5,
+        max_findings: int = 2000,
+    ) -> list[dict]:
+        """Cluster findings by vector similarity using greedy centroid selection.
+
+        Returns top_k clusters sorted by finding count descending.
+        Each cluster has: label, short_label, finding_count, session_count,
+        finding_ids, dominant_severity, dominant_auditor.
+        """
+        import numpy as np
+        from collections import Counter
+
+        points = self.scroll_all(FINDINGS, filters, limit=max_findings, with_vectors=True)
+        if not points:
+            return []
+
+        # Filter to points that actually have vectors
+        points_with_vectors = [p for p in points if p.get("vector")]
+        if not points_with_vectors:
+            return []
+
+        n = len(points_with_vectors)
+        dim = len(points_with_vectors[0]["vector"])
+        vectors = np.array([p["vector"] for p in points_with_vectors], dtype=np.float32)
+
+        # Normalize for cosine similarity (QDrant cosine collections
+        # store normalized vectors, but be safe)
+        norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        vectors = vectors / norms
+
+        # Cosine similarity matrix
+        sim = vectors @ vectors.T
+        sim_threshold = 1.0 - distance_threshold
+
+        # Density: count of neighbors within threshold for each point
+        density = (sim >= sim_threshold).sum(axis=1)
+
+        # Greedy centroid clustering
+        assigned = np.zeros(n, dtype=bool)
+        clusters = []
+
+        # Process by density descending
+        order = np.argsort(-density)
+
+        for idx in order:
+            if assigned[idx]:
+                continue
+
+            # Find all unassigned points within threshold of this centroid
+            neighbors = np.where((sim[idx] >= sim_threshold) & ~assigned)[0]
+            if len(neighbors) == 0:
+                continue
+
+            assigned[neighbors] = True
+            member_points = [points_with_vectors[i] for i in neighbors]
+
+            # Compute cluster metadata
+            payloads = [p["payload"] for p in member_points]
+            finding_ids = [p["finding_id"] for p in payloads if p.get("finding_id")]
+            sessions = set(p.get("target_session", "") for p in payloads if p.get("target_session"))
+            severities = [p.get("severity", "info") for p in payloads]
+            auditors = [p.get("auditor_type", "unknown") for p in payloads]
+
+            # Build cluster label from auditor type + finding type
+            centroid_payload = points_with_vectors[idx]["payload"]
+            claim = centroid_payload.get("claim", "Uncategorized findings")
+            finding_types = [p.get("finding_type", "info") for p in payloads]
+            short = _build_cluster_label(
+                [p.get("claim", "") for p in payloads],
+                Counter(auditors).most_common(1)[0][0] if auditors else "unknown",
+                Counter(finding_types).most_common(1)[0][0] if finding_types else "info",
+            )
+
+            clusters.append({
+                "label": claim,
+                "short_label": short,
+                "finding_count": len(neighbors),
+                "session_count": len(sessions),
+                "finding_ids": finding_ids,
+                "dominant_severity": Counter(severities).most_common(1)[0][0] if severities else "info",
+                "dominant_auditor": Counter(auditors).most_common(1)[0][0] if auditors else "unknown",
+                "centroid_finding_id": centroid_payload.get("finding_id", ""),
+            })
+
+        # Sort by finding count descending, return top_k
+        clusters.sort(key=lambda c: c["finding_count"], reverse=True)
+        return clusters[:top_k]
 
     # ── Session hierarchy ──
 
