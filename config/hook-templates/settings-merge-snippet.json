@@ -1,0 +1,35 @@
+{
+  "$comment": "Merge snippet — add these entries to your existing hooks object in .claude/settings.json. Do NOT replace your entire settings file with this. Replace {OBSERVABILITY_PATH} with the absolute path to the llm-observability repo.",
+
+  "hooks_to_merge": {
+    "PostToolUse": [
+      {
+        "command": "python \"{OBSERVABILITY_PATH}/observability/hooks/post_tool_use.py\"",
+        "description": "Audit telemetry: captures tool calls, agent spawns, code changes to QDrant",
+        "async": true
+      },
+      {
+        "command": "python \"{OBSERVABILITY_PATH}/observability/hooks/test_runner.py\"",
+        "description": "Eval telemetry: runs tests and lint after .py file changes",
+        "async": true
+      }
+    ],
+    "Stop": [
+      {
+        "command": "python \"{OBSERVABILITY_PATH}/observability/hooks/session_end.py\"",
+        "description": "Audit telemetry: aggregates session summary and flushes metrics"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "command": "python \"{OBSERVABILITY_PATH}/observability/hooks/version_archive.py\"",
+        "description": "Agent versioning: snapshots changed agent definitions before telemetry starts"
+      },
+      {
+        "command": "python \"{OBSERVABILITY_PATH}/observability/hooks/directive_intake.py\"",
+        "description": "Audit directives: reads pending directives and injects them into agent context. MUST be synchronous — async hooks cannot return additionalContext.",
+        "timeout": 10
+      }
+    ]
+  }
+}

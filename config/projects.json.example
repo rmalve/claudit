@@ -1,0 +1,11 @@
+{
+  "$comment": "Registered projects for the audit platform. Copy to projects.json and fill in local paths.",
+  "projects": [
+    {
+      "name": "my-project",
+      "active": true,
+      "root": "/path/to/your/project",
+      "description": "Description of the project being audited"
+    }
+  ]
+}

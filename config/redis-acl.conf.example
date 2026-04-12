@@ -1,0 +1,16 @@
+# Redis ACL configuration for the audit platform.
+# Copy this to redis-acl.conf and replace all passwords with strong, unique values.
+#
+# Generate passwords with: python -c "import secrets; print(secrets.token_urlsafe(24))"
+
+user default off
+user director on >CHANGE_ME_DIRECTOR_PASSWORD ~audit:* ~directives:* ~compliance:* ~promotions:* ~promotion_ack:* ~escalation_resolutions:* +XADD +XREADGROUP +XACK +XGROUP +XINFO +XLEN +XTRIM +XRANGE +XREVRANGE +PING +AUTH +INFO +KEYS
+user auditor-trace on >CHANGE_ME_TRACE_PASSWORD ~audit:findings ~audit:tasks ~audit:status +XADD +XREADGROUP +XACK +XINFO +XLEN +PING +AUTH
+user auditor-safety on >CHANGE_ME_SAFETY_PASSWORD ~audit:findings ~audit:tasks ~audit:status +XADD +XREADGROUP +XACK +XINFO +XLEN +PING +AUTH
+user auditor-policy on >CHANGE_ME_POLICY_PASSWORD ~audit:findings ~audit:tasks ~audit:status +XADD +XREADGROUP +XACK +XINFO +XLEN +PING +AUTH
+user auditor-hallucination on >CHANGE_ME_HALLUCINATION_PASSWORD ~audit:findings ~audit:tasks ~audit:status +XADD +XREADGROUP +XACK +XINFO +XLEN +PING +AUTH
+user auditor-drift on >CHANGE_ME_DRIFT_PASSWORD ~audit:findings ~audit:tasks ~audit:status +XADD +XREADGROUP +XACK +XINFO +XLEN +PING +AUTH
+user auditor-cost on >CHANGE_ME_COST_PASSWORD ~audit:findings ~audit:tasks ~audit:status +XADD +XREADGROUP +XACK +XINFO +XLEN +PING +AUTH
+
+# Per-project users — add one line per onboarded project:
+# user project-PROJECTNAME on >CHANGE_ME_PROJECT_PASSWORD ~directives:PROJECTNAME ~compliance:PROJECTNAME ~promotions:PROJECTNAME ~promotion_ack:PROJECTNAME +XREADGROUP +XACK +XADD +XINFO +XLEN +XGROUP +PING +AUTH
