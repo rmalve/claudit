@@ -1496,14 +1496,16 @@ def get_session_hierarchy(
         # Format events, resolve child session stubs for agent spawns
         formatted_events = []
         for event in turn_events:
-            event_type = event.get("_event_type", "tool_call")
+            raw_type = event.get("_event_type", "tool_call")
+            # Normalize to frontend-expected types
+            event_type = "tool_use" if raw_type == "tool_call" else raw_type
             formatted = {
                 "type": event_type,
                 "timestamp": event.get("timestamp"),
                 "timestamp_epoch": event.get("timestamp_epoch"),
             }
 
-            if event_type == "tool_call":
+            if raw_type == "tool_call":
                 formatted.update({
                     "tool_name": event.get("tool_name"),
                     "status": event.get("status"),
@@ -1513,14 +1515,14 @@ def get_session_hierarchy(
                     "input_summary": event.get("input_summary"),
                     "output_summary": event.get("output_summary"),
                 })
-            elif event_type == "agent_spawn":
+            elif raw_type == "agent_spawn":
                 child_stub = _find_child_session(qb, session_id, event)
                 formatted.update({
                     "child_agent": event.get("child_agent"),
                     "description": event.get("description"),
                     "child_session": child_stub,
                 })
-            elif event_type == "code_change":
+            elif raw_type == "code_change":
                 formatted.update({
                     "file_path": event.get("file_path"),
                     "operation": event.get("operation"),
