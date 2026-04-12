@@ -28,7 +28,11 @@ export default function Findings() {
 
   const { data, loading } = useApi(`/api/findings?${params}`, { refreshInterval: 15000 })
 
-  const findings = data?.findings || []
+  const clusterIds = searchParams.get('cluster_ids')
+  const clusterIdSet = clusterIds ? new Set(clusterIds.split(',')) : null
+  const findings = clusterIdSet
+    ? (data?.findings || []).filter(f => clusterIdSet.has(f.finding_id))
+    : (data?.findings || [])
 
   return (
     <div className="p-6 space-y-4">

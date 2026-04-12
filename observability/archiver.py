@@ -58,9 +58,11 @@ class StreamArchiver:
         self,
         store: AuditStore | None = None,
         client: StreamClient | None = None,
+        qdrant: "QdrantBackend | None" = None,
     ):
         self._store = store or AuditStore()
         self._client = client if client is not None else StreamClient.for_director()
+        self._qdrant = qdrant
 
     def archive_cycle(self, audit_cycle_id: str | None = None, include_project_streams: bool = True) -> dict:
         """Archive all audit streams for the completed cycle.
@@ -352,6 +354,22 @@ class StreamArchiver:
             if audit_cycle_id:
                 payload["audit_cycle_id"] = audit_cycle_id
             archive_fn(stream_id, env.timestamp.isoformat(), payload)
+
+            # Dual-write findings to QDrant for semantic clustering
+            if archive_method == "archive_finding" and self._qdrant:
+                try:
+                    semantic_text = (
+                        f"Finding [{payload.get('auditor_type', '')}] "
+                        f"[{payload.get('finding_type', '')}] "
+                        f"[{payload.get('severity', '')}] "
+                        f"Confidence: {payload.get('confidence', 0):.2f} | "
+                        f"Claim: {payload.get('claim', '')} | "
+                        f"Evidence: {str(payload.get('evidence', ''))[:300]} | "
+                        f"Recommendation: {str(payload.get('recommendation', ''))[:200]}"
+                    )
+                    self._qdrant.add_finding(text=semantic_text, payload=payload)
+                except Exception as e:
+                    logger.warning("QDrant finding write failed (non-fatal): %s", e)
 
         # Step 3: Commit the batch
         self._store.commit()

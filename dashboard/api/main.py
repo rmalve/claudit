@@ -462,6 +462,46 @@ def get_findings_by_confidence(
     return {"by_confidence": buckets}
 
 
+@app.get("/api/findings/clusters")
+def get_finding_clusters(
+    project: str | None = Query(None),
+    threshold: float = Query(0.20, ge=0.05, le=0.9),
+    top_k: int = Query(5, ge=1, le=20),
+):
+    """Cluster findings by semantic similarity using QDrant vector embeddings."""
+    qb = get_qdrant()
+    filters = {}
+    if project:
+        filters["project"] = project
+
+    clusters = qb.cluster_findings(
+        filters=filters if filters else None,
+        distance_threshold=threshold,
+        top_k=top_k,
+    )
+
+    total = qb.get_collection_count("findings")
+    clustered = sum(c["finding_count"] for c in clusters)
+
+    return {
+        "clusters": [
+            {
+                "cluster_id": i,
+                "label": c["label"],
+                "short_label": c["short_label"],
+                "finding_count": c["finding_count"],
+                "session_count": c["session_count"],
+                "finding_ids": c["finding_ids"],
+                "dominant_severity": c["dominant_severity"],
+                "dominant_auditor": c["dominant_auditor"],
+            }
+            for i, c in enumerate(clusters)
+        ],
+        "total_findings": total,
+        "clustered_findings": clustered,
+    }
+
+
 @app.get("/api/directives/by-status")
 def get_directives_by_status(
     project: str | None = Query(None),
