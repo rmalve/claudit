@@ -203,7 +203,10 @@ class QdrantBackend:
             self._client = QdrantClient(path=storage_path)
             logger.info("Qdrant running embedded at: %s", storage_path)
 
-        self._embedder = TextEmbedding(EMBEDDING_MODEL)
+        cache_dir = os.path.expanduser(
+            os.environ.get("FASTEMBED_CACHE_PATH", "~/.claude/observability/fastembed_cache")
+        )
+        self._embedder = TextEmbedding(EMBEDDING_MODEL, cache_dir=cache_dir)
         self._ensure_collections()
 
     # Payload fields and their index types
