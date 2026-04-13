@@ -23,56 +23,6 @@ const statusColors = {
 const typeOptions = ['RECOMMENDATION', 'DIRECTIVE']
 const statusOptions = Object.keys(statusColors)
 
-const lifecycleSteps = [
-  'PENDING', 'ACKNOWLEDGED', 'VERIFICATION_PENDING', 'VERIFIED_COMPLIANT'
-]
-
-function StatusBadge({ status }) {
-  const s = statusColors[status] || statusColors.PENDING
-  return (
-    <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold ${s.bg} ${s.text}`}>
-      {s.label}
-    </span>
-  )
-}
-
-function LifecycleTracker({ currentStatus }) {
-  const statusIndex = lifecycleSteps.indexOf(currentStatus)
-  const isFailed = ['VERIFIED_NON_COMPLIANT', 'NON_COMPLIANT', 'ESCALATED'].includes(currentStatus)
-  const isSuperseded = currentStatus === 'SUPERSEDED'
-
-  return (
-    <div className="flex items-center gap-1 mt-2">
-      {lifecycleSteps.map((step, i) => {
-        const isActive = i <= statusIndex && !isFailed && !isSuperseded
-        const isCurrent = step === currentStatus
-        return (
-          <div key={step} className="flex items-center">
-            <div className={`w-2.5 h-2.5 rounded-full ${
-              isCurrent ? 'bg-brand-accent ring-2 ring-brand-accent/30' :
-              isActive ? 'bg-brand-green' :
-              'bg-brand-bg-tertiary'
-            }`} />
-            <span className={`text-[10px] mx-1 ${
-              isActive || isCurrent ? 'text-brand-text-secondary' : 'text-brand-text-tertiary'
-            }`}>
-              {step.replace('_', ' ').replace('VERIFICATION PENDING', 'VERIFY')}
-            </span>
-            {i < lifecycleSteps.length - 1 && (
-              <div className={`w-4 h-0.5 ${isActive ? 'bg-brand-green' : 'bg-brand-border'}`} />
-            )}
-          </div>
-        )
-      })}
-      {isFailed && (
-        <div className="flex items-center ml-2">
-          <div className="w-2.5 h-2.5 rounded-full bg-brand-red" />
-          <span className="text-[10px] mx-1 text-brand-red">{currentStatus.replace('_', ' ')}</span>
-        </div>
-      )}
-    </div>
-  )
-}
 
 function ComplianceTimeline({ events }) {
   if (!events || events.length === 0) return null
@@ -339,7 +289,7 @@ export default function Directives() {
               className={`bg-brand-surface border rounded-lg p-4 cursor-pointer transition-colors ${
                 selected === i ? 'border-brand-accent' : 'border-brand-border hover:border-brand-accent/50'
               }`}
-              onClick={() => setSelected(selected === i ? null : i)}
+              onClick={() => { if (!window.getSelection()?.toString()) setSelected(selected === i ? null : i) }}
             >
               <div className="flex items-start gap-3">
                 <span className={`text-[11px] font-bold uppercase px-2.5 py-0.5 rounded-full shrink-0 ${
@@ -348,11 +298,8 @@ export default function Directives() {
                   {dtype}
                 </span>
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium text-brand-text truncate">
-                      {d.title || d.content?.slice(0, 80) || '(no title)'}
-                    </span>
-                    <StatusBadge status={lifecycleStatus} />
+                  <div className="text-sm font-medium text-brand-text truncate">
+                    {d.title || d.content?.slice(0, 80) || '(no title)'}
                   </div>
                   <div className="flex gap-3 mt-1 text-xs text-brand-text-tertiary">
                     <span>Target: {d.target_agent || '—'}</span>
@@ -362,12 +309,13 @@ export default function Directives() {
                       <span className="text-brand-accent">{complianceEvents.length} compliance event(s)</span>
                     )}
                   </div>
-                  <LifecycleTracker currentStatus={lifecycleStatus} />
                 </div>
               </div>
 
+              <DirectiveLifecycleTimeline transitions={d.lifecycle_transitions} lifecycleStatus={lifecycleStatus} />
+
               {selected === i && (
-                <div className="mt-4 space-y-3 border-t border-brand-border pt-3">
+                <div className="mt-4 space-y-3 border-t border-brand-border pt-3" onClick={e => e.stopPropagation()}>
                   {(d.description || d.content) && (
                     <div>
                       <div className="text-[11px] font-semibold text-brand-text-tertiary uppercase tracking-wider mb-1">Content</div>
@@ -394,8 +342,6 @@ export default function Directives() {
                       </pre>
                     </div>
                   )}
-
-                  <DirectiveLifecycleTimeline directiveId={d.directive_id} />
 
                   <ComplianceTimeline events={complianceEvents} />
 
