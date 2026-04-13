@@ -32,7 +32,26 @@ from observability.messages import (
 )
 from observability.audit_store import AuditStore
 
-app = FastAPI(title="LLM Observability Audit Dashboard", version="0.1.0")
+import logging
+from contextlib import asynccontextmanager
+
+logger = logging.getLogger(__name__)
+
+# Eager-initialized backends (set during startup)
+_qb: QdrantBackend | None = None
+_sc: StreamClient | None = None
+_store: AuditStore | None = None
+
+
+@asynccontextmanager
+async def lifespan(app):
+    global _store
+    _store = AuditStore()
+    logger.info("AuditStore ready")
+    yield
+
+
+app = FastAPI(title="LLM Observability Audit Dashboard", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -40,11 +59,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Lazy-initialized backends
-_qb: QdrantBackend | None = None
-_sc: StreamClient | None = None
-_store: AuditStore | None = None
 
 
 def get_qdrant() -> QdrantBackend:
@@ -752,6 +766,9 @@ def get_directives(
 
         # Attach promotion decisions
         d["promotion_decisions"] = promotions_by_directive.get(did, [])
+
+        # Attach lifecycle transitions (avoids N+1 fetches from frontend)
+        d["lifecycle_transitions"] = store.query_directive_lifecycle(did) if did else []
 
     # Filter by status if requested (use computed lifecycle_status)
     if status:
