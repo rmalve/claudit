@@ -497,48 +497,61 @@ class Orchestrator:
         logger.info("Redis: OK")
 
         try:
-            # Phase 1: Director assigns tasks
-            assign_proc = self.processes["director:assign"]
-            if not self._run_phase(assign_proc, "Phase 1: Director assigns tasks"):
-                logger.critical("Director assignment failed. Cannot proceed.")
-                self.shutdown()
-                return
-
-            # Phase 2: Trace Auditor builds timelines
-            trace_proc = self.processes["auditor:trace"]
-            self._run_phase(trace_proc, "Phase 2: Trace Auditor builds timelines")
-
-            # Phase 3: Other 5 auditors in parallel
-            other_auditors = [
-                proc for key, proc in self.processes.items()
-                if key.startswith("auditor:") and key != "auditor:trace"
-            ]
-            self._run_parallel_phase(other_auditors, "Phase 3: Auditors analyze findings")
-
-            # Phase 4: Director synthesizes
-            synth_proc = self.processes["director:synthesize"]
-            self._run_phase(synth_proc, "Phase 4: Director synthesizes report")
-
-            # Phase 5: Mark audited events in QDrant
-            logger.info("═══ Phase 5: Marking audited events ═══")
+            # Pre-check: if no pending events to audit, skip LLM-powered phases.
+            # Cycle-boundary checks (Phase 6) still run to advance directive deadlines.
             try:
                 from observability.qdrant_backend import QdrantBackend
-                qb = QdrantBackend()
-                # Find sessions with unaudited events
-                unaudited = qb.scroll_all("tool_calls", filters={"audited__ne": True}, limit=10000)
-                session_ids = set(p.get("payload", {}).get("session_id", "") for p in unaudited)
-                session_ids.discard("")
-
-                total_marked = 0
-                for sid in session_ids:
-                    count = qb.mark_session_audited(sid)
-                    total_marked += count
-                    logger.info("  Marked %d events as audited for session %s", count, sid[:12])
-
-                logger.info("Total: %d events marked as audited across %d sessions",
-                            total_marked, len(session_ids))
+                pending = QdrantBackend().count_pending_audit()
+                logger.info("Pending events to audit: %d", pending)
             except Exception as e:
-                logger.warning("Failed to mark audited events: %s", e)
+                logger.warning("Failed to check pending audit count: %s", e)
+                pending = None  # Unknown — proceed as normal
+
+            if pending == 0:
+                logger.info("═══ No pending events; skipping audit phases 1-5 ═══")
+            else:
+                # Phase 1: Director assigns tasks
+                assign_proc = self.processes["director:assign"]
+                if not self._run_phase(assign_proc, "Phase 1: Director assigns tasks"):
+                    logger.critical("Director assignment failed. Cannot proceed.")
+                    self.shutdown()
+                    return
+
+                # Phase 2: Trace Auditor builds timelines
+                trace_proc = self.processes["auditor:trace"]
+                self._run_phase(trace_proc, "Phase 2: Trace Auditor builds timelines")
+
+                # Phase 3: Other 5 auditors in parallel
+                other_auditors = [
+                    proc for key, proc in self.processes.items()
+                    if key.startswith("auditor:") and key != "auditor:trace"
+                ]
+                self._run_parallel_phase(other_auditors, "Phase 3: Auditors analyze findings")
+
+                # Phase 4: Director synthesizes
+                synth_proc = self.processes["director:synthesize"]
+                self._run_phase(synth_proc, "Phase 4: Director synthesizes report")
+
+                # Phase 5: Mark audited events in QDrant
+                logger.info("═══ Phase 5: Marking audited events ═══")
+                try:
+                    from observability.qdrant_backend import QdrantBackend
+                    qb = QdrantBackend()
+                    # Find sessions with unaudited events
+                    unaudited = qb.scroll_all("tool_calls", filters={"audited__ne": True}, limit=10000)
+                    session_ids = set(p.get("payload", {}).get("session_id", "") for p in unaudited)
+                    session_ids.discard("")
+
+                    total_marked = 0
+                    for sid in session_ids:
+                        count = qb.mark_session_audited(sid)
+                        total_marked += count
+                        logger.info("  Marked %d events as audited for session %s", count, sid[:12])
+
+                    logger.info("Total: %d events marked as audited across %d sessions",
+                                total_marked, len(session_ids))
+                except Exception as e:
+                    logger.warning("Failed to mark audited events: %s", e)
 
             # Phase 6: Archive streams to SQLite + run cycle-boundary checks
             logger.info("═══ Phase 6: Archiving streams to SQLite ═══")

@@ -416,24 +416,32 @@ def get_findings_by_type(
     end_date: str | None = Query(None),
 ):
     """Group findings by finding_type — used for the findings status bar chart."""
+    store = get_store()
     sc = get_stream_client()
-    results = sc._redis.xrange("audit:findings", count=500)
     start = _parse_date_param(start_date)
     end = _parse_date_param(end_date)
 
-    by_type = {}
-    for stream_id, data in results:
-        try:
-            env = MessageEnvelope.from_stream_dict(data)
-            p = env.payload
-            if project and p.get("project") != project:
-                continue
-            if not _in_date_range(env.timestamp.isoformat(), start, end):
-                continue
-            ft = p.get("finding_type", "unknown").lower()
-            by_type[ft] = by_type.get(ft, 0) + 1
-        except Exception:
+    # Merge archived (SQLite) + live (Redis), dedup by finding_id
+    seen_ids: set[str] = set()
+    merged: list[dict] = []
+    for f in store.query_findings(project=project, limit=5000):
+        fid = f.get("finding_id")
+        if fid:
+            seen_ids.add(fid)
+        merged.append(f)
+    for f in _read_live_findings(sc, limit=500):
+        if project and f.get("project") != project:
             continue
+        if f.get("finding_id") in seen_ids:
+            continue
+        merged.append(f)
+
+    by_type: dict[str, int] = {}
+    for p in merged:
+        if not _in_date_range(p.get("timestamp", ""), start, end):
+            continue
+        ft = (p.get("finding_type") or "unknown").lower()
+        by_type[ft] = by_type.get(ft, 0) + 1
 
     return {"by_type": by_type}
 
@@ -445,33 +453,41 @@ def get_findings_by_confidence(
     end_date: str | None = Query(None),
 ):
     """Bucket findings by confidence score — used for the confidence pie chart."""
+    store = get_store()
     sc = get_stream_client()
-    results = sc._redis.xrange("audit:findings", count=500)
     start = _parse_date_param(start_date)
     end = _parse_date_param(end_date)
 
-    buckets = {"0.9-1.0": 0, "0.7-0.9": 0, "0.5-0.7": 0, "0.0-0.5": 0, "unknown": 0}
-    for stream_id, data in results:
-        try:
-            env = MessageEnvelope.from_stream_dict(data)
-            p = env.payload
-            if project and p.get("project") != project:
-                continue
-            if not _in_date_range(env.timestamp.isoformat(), start, end):
-                continue
-            conf = p.get("confidence")
-            if conf is None:
-                buckets["unknown"] += 1
-            elif conf >= 0.9:
-                buckets["0.9-1.0"] += 1
-            elif conf >= 0.7:
-                buckets["0.7-0.9"] += 1
-            elif conf >= 0.5:
-                buckets["0.5-0.7"] += 1
-            else:
-                buckets["0.0-0.5"] += 1
-        except Exception:
+    # Merge archived (SQLite) + live (Redis), dedup by finding_id
+    seen_ids: set[str] = set()
+    merged: list[dict] = []
+    for f in store.query_findings(project=project, limit=5000):
+        fid = f.get("finding_id")
+        if fid:
+            seen_ids.add(fid)
+        merged.append(f)
+    for f in _read_live_findings(sc, limit=500):
+        if project and f.get("project") != project:
             continue
+        if f.get("finding_id") in seen_ids:
+            continue
+        merged.append(f)
+
+    buckets = {"0.9-1.0": 0, "0.7-0.9": 0, "0.5-0.7": 0, "0.0-0.5": 0, "unknown": 0}
+    for p in merged:
+        if not _in_date_range(p.get("timestamp", ""), start, end):
+            continue
+        conf = p.get("confidence")
+        if conf is None:
+            buckets["unknown"] += 1
+        elif conf >= 0.9:
+            buckets["0.9-1.0"] += 1
+        elif conf >= 0.7:
+            buckets["0.7-0.9"] += 1
+        elif conf >= 0.5:
+            buckets["0.5-0.7"] += 1
+        else:
+            buckets["0.0-0.5"] += 1
 
     return {"by_confidence": buckets}
 
