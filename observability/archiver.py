@@ -348,10 +348,11 @@ class StreamArchiver:
             # only in the stream name `compliance:{project}`).
             if archive_method == "archive_compliance" and stream.startswith("compliance:"):
                 payload.setdefault("project", stream.removeprefix("compliance:"))
-            # Gap 1 Issue #2: archiver is authoritative for audit_cycle_id.
-            # Override whatever the publisher stamped (if anything) with the
-            # cycle being actively drained.
-            if audit_cycle_id:
+            # Archiver fills in audit_cycle_id only when the publisher
+            # didn't stamp one. Preserving the original value keeps
+            # historical findings dated to the cycle that generated them
+            # rather than the cycle in which they were archived.
+            if audit_cycle_id and not payload.get("audit_cycle_id"):
                 payload["audit_cycle_id"] = audit_cycle_id
             archive_fn(stream_id, env.timestamp.isoformat(), payload)
 
