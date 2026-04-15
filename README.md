@@ -129,10 +129,6 @@ pytest tests/
 bash scripts/verify_scrub.sh
 ```
 
-## Acknowledgments
-
-Built on [claude-agent-sdk](https://github.com/anthropics/claude-agent-sdk-python) by Anthropic.
-
 ## License
 
 [MIT](LICENSE)
