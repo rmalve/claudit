@@ -58,7 +58,7 @@ def _seed_directive(store, **overrides):
         "source": "director",
         "directive_type": "DIRECTIVE",
         "target_agent": "architect",
-        "project": "my-project",
+        "project": "rpi",
         "content": "Do the thing",
         "required_action": "Confirm",
         "compliance_due": "2099-12-31T00:00:00+00:00",
@@ -96,7 +96,7 @@ def _seed_compliance(store, **overrides):
         "agent": "architect",
         "agent_version": None,
         "session_id": "sess-1",
-        "project": "my-project",
+        "project": "rpi",
         "action_taken": "Acknowledged and implemented",
         "conflict_reason": None,
         "is_verification": 0,
@@ -143,7 +143,7 @@ def _seed_verification_finding(store, **overrides):
         "confidence": 0.9,
         "target_agent": "architect",
         "target_session": "sess-2",
-        "project": "my-project",
+        "project": "rpi",
         "claim": "Behavior change confirmed",
         "evidence": "Observed compliance in sessions X, Y",
         "recommendation": "",
@@ -485,7 +485,7 @@ class TestArchiveFindingPersistsVerificationFields:
                 "finding_type": "verification",
                 "target_agent": "architect",
                 "target_session": "sess-x",
-                "project": "my-project",
+                "project": "rpi",
                 "claim": "Verified compliance",
                 "evidence": "Behavior changed",
                 "target_directive_id": "D1",
@@ -514,7 +514,7 @@ class TestArchiveFindingPersistsVerificationFields:
                 "auditor_type": "policy",
                 "finding_type": "verification",
                 "target_agent": "architect",
-                "project": "my-project",
+                "project": "rpi",
                 "target_directive_id": "D42",
                 "verification_result": "non_compliant",
                 "verification_evidence": "Agent reverted",
@@ -869,7 +869,7 @@ class TestQueryStaleVerifications:
             status="VERIFICATION_PENDING",
             audit_cycle_id="cycle-1",
             target_agent="architect",
-            project="my-project",
+            project="rpi",
             verification_criteria="Check X",
         )
         _seed_compliance(store, compliance_id="C-SV7", directive_id="D-SV7", audit_cycle_id="cycle-1")
@@ -878,7 +878,7 @@ class TestQueryStaleVerifications:
         assert len(result) == 1
         r = result[0]
         assert r["target_agent"] == "architect"
-        assert r["project"] == "my-project"
+        assert r["project"] == "rpi"
         assert r["verification_criteria"] == "Check X"
         assert "verification_window_sessions" in r
         assert "followups" in r
@@ -903,7 +903,7 @@ class TestArchiverStaleVerificationCheck:
             status="VERIFICATION_PENDING",
             audit_cycle_id="cycle-1",
             target_agent="architect",
-            project="my-project",
+            project="rpi",
             verification_criteria="Read before edit",
         )
         _seed_compliance(
@@ -996,7 +996,7 @@ class TestArchiverStaleVerificationCheck:
             status="VERIFICATION_PENDING",
             audit_cycle_id="cycle-1",
             target_agent="architect",
-            project="my-project",
+            project="rpi",
         )
         _seed_compliance(store, compliance_id="C-S5", directive_id="D-S5", audit_cycle_id="cycle-3")  # same cycle as current
         _seed_archive_log(store, ["cycle-1", "cycle-2", "cycle-3"])
@@ -1041,8 +1041,8 @@ class TestArchiverComplianceStreamNotTrimmed:
         from observability.messages import MessageEnvelope, MessageType
 
         env = MessageEnvelope(
-            stream="compliance:my-project",
-            source="project:my-project:architect",
+            stream="compliance:rpi",
+            source="project:rpi:architect",
             target="director",
             message_type=MessageType.STATUS,
             payload={"compliance_id": "C-NOTRIM", "directive_id": "D-NT", "agent": "architect"},
@@ -1051,11 +1051,11 @@ class TestArchiverComplianceStreamNotTrimmed:
         mock_client._redis.xrange.return_value = [("1-0", env.to_stream_dict())]
 
         archiver = StreamArchiver(store=store, client=mock_client)
-        archiver._archive_stream("compliance:my-project", "archive_compliance", "cycle-nt")
+        archiver._archive_stream("compliance:rpi", "archive_compliance", "cycle-nt")
 
-        # xtrim must NOT have been called for compliance:my-project
-        xtrim_calls = [c for c in mock_client._redis.xtrim.call_args_list if c[0][0] == "compliance:my-project"]
-        assert xtrim_calls == [], f"Expected no xtrim on compliance:my-project, got: {xtrim_calls}"
+        # xtrim must NOT have been called for compliance:rpi
+        xtrim_calls = [c for c in mock_client._redis.xtrim.call_args_list if c[0][0] == "compliance:rpi"]
+        assert xtrim_calls == [], f"Expected no xtrim on compliance:rpi, got: {xtrim_calls}"
 
     def test_audit_findings_stream_is_still_trimmed(self, store):
         """Regression guard: non-compliance streams still get trimmed as before."""
@@ -1073,7 +1073,7 @@ class TestArchiverComplianceStreamNotTrimmed:
                 "auditor_type": "safety",
                 "finding_type": "violation",
                 "target_agent": "architect",
-                "project": "my-project",
+                "project": "rpi",
             },
         )
         mock_client = MagicMock()
@@ -1097,8 +1097,8 @@ class TestArchiverComplianceProjectInjection:
 
         # Build a fake envelope that xrange would return
         env = MessageEnvelope(
-            stream="compliance:my-project",
-            source="project:my-project:architect",
+            stream="compliance:rpi",
+            source="project:rpi:architect",
             target="director",
             message_type=MessageType.STATUS,
             payload={"compliance_id": "C-INJ", "directive_id": "D1", "agent": "architect", "action_taken": "done"},
@@ -1108,17 +1108,20 @@ class TestArchiverComplianceProjectInjection:
         mock_client._redis.xtrim.return_value = 0
 
         archiver = StreamArchiver(store=store, client=mock_client)
-        archiver._archive_stream("compliance:my-project", "archive_compliance", "cycle-arch")
+        archiver._archive_stream("compliance:rpi", "archive_compliance", "cycle-arch")
 
-        # Query compliance table — project should have been injected as "my-project"
+        # Query compliance table — project should have been injected as "rpi"
         row = store._conn.execute(
             "SELECT project, audit_cycle_id FROM compliance WHERE compliance_id='C-INJ'"
         ).fetchone()
         assert row is not None
-        assert row["project"] == "my-project"
+        assert row["project"] == "rpi"
         assert row["audit_cycle_id"] == "cycle-arch"
 
-    def test_archiver_overrides_audit_cycle_id_in_payload(self, store):
+    def test_archiver_preserves_publisher_audit_cycle_id(self, store):
+        """When the payload already has an audit_cycle_id, the archiver must
+        preserve it. Overriding with the current cycle collapses historical
+        findings to the archival day and erases per-day reporting."""
         from unittest.mock import MagicMock
         from observability.archiver import StreamArchiver
         from observability.messages import MessageEnvelope, MessageType
@@ -1129,12 +1132,12 @@ class TestArchiverComplianceProjectInjection:
             target="director",
             message_type=MessageType.FINDING,
             payload={
-                "finding_id": "F-OVR",
+                "finding_id": "F-PRESERVE",
                 "auditor_type": "policy",
                 "finding_type": "verification",
                 "target_agent": "architect",
-                "project": "my-project",
-                "audit_cycle_id": "cycle-stale",  # publisher stamped this
+                "project": "rpi",
+                "audit_cycle_id": "cycle-original",  # publisher stamped this
             },
         )
         mock_client = MagicMock()
@@ -1145,15 +1148,47 @@ class TestArchiverComplianceProjectInjection:
         archiver._archive_stream("audit:findings", "archive_finding", "cycle-current")
 
         row = store._conn.execute(
-            "SELECT audit_cycle_id FROM findings WHERE finding_id='F-OVR'"
+            "SELECT audit_cycle_id FROM findings WHERE finding_id='F-PRESERVE'"
         ).fetchone()
-        # Archiver's cycle_id should win over the publisher's stale value
+        assert row["audit_cycle_id"] == "cycle-original"
+
+    def test_archiver_fills_missing_audit_cycle_id(self, store):
+        """When the payload has no audit_cycle_id, the archiver fills it in
+        with the current cycle — covers publishers that don't stamp it."""
+        from unittest.mock import MagicMock
+        from observability.archiver import StreamArchiver
+        from observability.messages import MessageEnvelope, MessageType
+
+        env = MessageEnvelope(
+            stream="audit:findings",
+            source="auditor:policy",
+            target="director",
+            message_type=MessageType.FINDING,
+            payload={
+                "finding_id": "F-FILL",
+                "auditor_type": "policy",
+                "finding_type": "verification",
+                "target_agent": "architect",
+                "project": "rpi",
+                # no audit_cycle_id — archiver should fill it in
+            },
+        )
+        mock_client = MagicMock()
+        mock_client._redis.xrange.return_value = [("1-0", env.to_stream_dict())]
+        mock_client._redis.xtrim.return_value = 0
+
+        archiver = StreamArchiver(store=store, client=mock_client)
+        archiver._archive_stream("audit:findings", "archive_finding", "cycle-current")
+
+        row = store._conn.execute(
+            "SELECT audit_cycle_id FROM findings WHERE finding_id='F-FILL'"
+        ).fetchone()
         assert row["audit_cycle_id"] == "cycle-current"
 
 
 class TestQueryNonVerifiedCounts:
     def test_returns_zeroes_on_empty_db(self, store):
-        counts = store.query_non_verified_counts(project="my-project")
+        counts = store.query_non_verified_counts(project="rpi")
         assert counts["non_compliant"] == 0
         assert counts["verified_non_compliant"] == 0
         assert counts["escalated"] == 0
@@ -1161,29 +1196,29 @@ class TestQueryNonVerifiedCounts:
         assert counts["superseded"] == 0
 
     def test_counts_dismissed_directives(self, store):
-        _seed_directive(store, directive_id="D-DISM-1", project="my-project")
+        _seed_directive(store, directive_id="D-DISM-1", project="rpi")
         store.dismiss_directive("D-DISM-1", reason="x")
-        counts = store.query_non_verified_counts(project="my-project")
+        counts = store.query_non_verified_counts(project="rpi")
         assert counts["dismissed"] == 1
 
     def test_counts_escalated_from_conflict(self, store):
-        _seed_directive(store, directive_id="D-ESC", project="my-project")
-        _seed_compliance(store, compliance_id="C-ESC", directive_id="D-ESC", project="my-project", conflict_reason="conflict")
-        counts = store.query_non_verified_counts(project="my-project")
+        _seed_directive(store, directive_id="D-ESC", project="rpi")
+        _seed_compliance(store, compliance_id="C-ESC", directive_id="D-ESC", project="rpi", conflict_reason="conflict")
+        counts = store.query_non_verified_counts(project="rpi")
         assert counts["escalated"] == 1
 
     def test_counts_superseded_directives(self, store):
-        _seed_directive(store, directive_id="D-OLD", project="my-project")
-        _seed_directive(store, directive_id="D-NEW", project="my-project", supersedes="D-OLD")
-        counts = store.query_non_verified_counts(project="my-project")
+        _seed_directive(store, directive_id="D-OLD", project="rpi")
+        _seed_directive(store, directive_id="D-NEW", project="rpi", supersedes="D-OLD")
+        counts = store.query_non_verified_counts(project="rpi")
         assert counts["superseded"] == 1
 
     def test_filters_by_project(self, store):
-        _seed_directive(store, directive_id="D-RPI", project="my-project")
+        _seed_directive(store, directive_id="D-RPI", project="rpi")
         _seed_directive(store, directive_id="D-OTHER", project="other")
         store.dismiss_directive("D-RPI", reason="x")
         store.dismiss_directive("D-OTHER", reason="x")
-        counts_rpi = store.query_non_verified_counts(project="my-project")
+        counts_rpi = store.query_non_verified_counts(project="rpi")
         counts_other = store.query_non_verified_counts(project="other")
         assert counts_rpi["dismissed"] == 1
         assert counts_other["dismissed"] == 1
@@ -1191,14 +1226,14 @@ class TestQueryNonVerifiedCounts:
 
 class TestQueryCyclesToVerification:
     def test_returns_empty_when_no_verified_directives(self, store):
-        result = store.query_cycles_to_verification(project="my-project", last_n_cycles=20)
+        result = store.query_cycles_to_verification(project="rpi", last_n_cycles=20)
         assert result == []
 
     def test_returns_cycles_elapsed_for_verified_directive(self, store):
         # PENDING in cycle-001, VERIFIED in cycle-003
         _seed_directive(store, directive_id="D1", audit_cycle_id="cycle-001")
         _seed_verification_finding(store, target_directive_id="D1", audit_cycle_id="cycle-003")
-        result = store.query_cycles_to_verification(project="my-project", last_n_cycles=20)
+        result = store.query_cycles_to_verification(project="rpi", last_n_cycles=20)
         # Should contain D1 with both cycle markers
         d1_rows = [r for r in result if r["directive_id"] == "D1"]
         assert len(d1_rows) == 1
@@ -1206,10 +1241,10 @@ class TestQueryCyclesToVerification:
         assert d1_rows[0]["verified_cycle"] == "cycle-003"
 
     def test_filters_by_project(self, store):
-        _seed_directive(store, directive_id="D1", project="my-project", audit_cycle_id="cycle-001")
+        _seed_directive(store, directive_id="D1", project="rpi", audit_cycle_id="cycle-001")
         _seed_directive(store, directive_id="D2", project="other", audit_cycle_id="cycle-001")
-        _seed_verification_finding(store, finding_id="F1", target_directive_id="D1", project="my-project", audit_cycle_id="cycle-002")
+        _seed_verification_finding(store, finding_id="F1", target_directive_id="D1", project="rpi", audit_cycle_id="cycle-002")
         _seed_verification_finding(store, finding_id="F2", target_directive_id="D2", project="other", audit_cycle_id="cycle-002")
-        result = store.query_cycles_to_verification(project="my-project", last_n_cycles=20)
+        result = store.query_cycles_to_verification(project="rpi", last_n_cycles=20)
         directive_ids = {r["directive_id"] for r in result}
         assert directive_ids == {"D1"}

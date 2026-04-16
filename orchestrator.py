@@ -53,7 +53,8 @@ REPO_ROOT = Path(__file__).parent
 AGENTS_DIR = REPO_ROOT / "agents"
 PROJECTS_CONFIG = REPO_ROOT / "config" / "projects.json"
 MAX_RESTART_ATTEMPTS = 3
-HEALTH_CHECK_INTERVAL = 30  # seconds
+HEALTH_CHECK_INTERVAL = 5  # seconds; controls exit-detection latency in parallel phases
+PIPELINE_LOG_INTERVAL = 30  # seconds; throttle for pipeline status output
 
 
 class ProcessState(str, Enum):
@@ -454,6 +455,7 @@ class Orchestrator:
             self._start_process(proc)
 
         # Monitor until all complete
+        last_pipeline_log = 0.0
         while not self._shutdown:
             time.sleep(HEALTH_CHECK_INTERVAL)
 
@@ -462,7 +464,10 @@ class Orchestrator:
                 break
 
             self._check_health()
-            self._log_task_pipeline()
+            now = time.time()
+            if now - last_pipeline_log >= PIPELINE_LOG_INTERVAL:
+                self._log_task_pipeline()
+                last_pipeline_log = now
 
             alive = [p for p in procs if p.state == ProcessState.RUNNING]
             if not alive:
