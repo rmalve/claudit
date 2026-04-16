@@ -203,11 +203,22 @@ class QdrantBackend:
             self._client = QdrantClient(path=storage_path)
             logger.info("Qdrant running embedded at: %s", storage_path)
 
-        cache_dir = os.path.expanduser(
+        self._fastembed_cache_dir = os.path.expanduser(
             os.environ.get("FASTEMBED_CACHE_PATH", "~/.claude/observability/fastembed_cache")
         )
-        self._embedder = TextEmbedding(EMBEDDING_MODEL, cache_dir=cache_dir)
+        # Lazy: only loaded when an embedding is actually needed. Many callers
+        # (scroll_all, count, query-only flows) never touch the embedder, so
+        # skipping the 2-5s ONNX model load at construction time is a meaningful
+        # win — especially for orchestrator subprocesses and the dashboard API.
+        self._embedder: TextEmbedding | None = None
         self._ensure_collections()
+
+    def _get_embedder(self) -> TextEmbedding:
+        if self._embedder is None:
+            self._embedder = TextEmbedding(
+                EMBEDDING_MODEL, cache_dir=self._fastembed_cache_dir
+            )
+        return self._embedder
 
     # Payload fields and their index types
     _PAYLOAD_INDEXES: list[tuple[str, Any]] = [
@@ -247,7 +258,7 @@ class QdrantBackend:
 
     def _embed(self, text: str) -> list[float]:
         """Embed a single text string using fastembed."""
-        vectors = list(self._embedder.embed([text]))
+        vectors = list(self._get_embedder().embed([text]))
         return vectors[0].tolist()
 
     # ── Write methods ──
