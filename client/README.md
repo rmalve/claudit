@@ -177,10 +177,18 @@ The `version_archive.py` hook (configured in Step 6) will automatically snapshot
 ### Step 10: Start the audit platform (audit platform)
 
 ```bash
+# Per-session audit (default) — audits new/unaudited sessions only
 python orchestrator.py
+
+# Cross-session audit (on-demand) — trend analysis across session history
+python orchestrator.py --mode cross-session
+
+# Scope to specific projects
+python orchestrator.py --projects my-project
+python orchestrator.py --mode cross-session --projects my-project
 ```
 
-Reads `config/projects.json` and audits all active projects. No project name needed.
+Per-session mode runs trace, safety, policy, and hallucination auditors against unaudited sessions. Cross-session mode runs drift and cost auditors with progressive summarization (3 most recent sessions get raw access, older sessions use summaries only). Cross-session audits can also be triggered from the dashboard Overview page.
 
 ### Step 11: Verify end-to-end (both sides)
 
