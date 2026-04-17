@@ -1924,12 +1924,14 @@ def trigger_cross_session_audit(
     if _cross_session_process is not None and _cross_session_process.poll() is None:
         return {"status": "already_running", "pid": _cross_session_process.pid}
 
-    # Validate project against known projects to prevent command injection
+    # Validate project against known projects to prevent command injection (CWE-78).
+    # Use the allowlisted value from projects.json, never the raw user input.
     known_projects = _load_projects()
     if project:
-        if project not in known_projects:
+        matched = [p for p in known_projects if p == project]
+        if not matched:
             raise HTTPException(status_code=400, detail=f"Unknown project: {project}")
-        projects = project
+        projects = matched[0]  # Use value from allowlist, not user input
     else:
         projects = ",".join(known_projects)
 
