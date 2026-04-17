@@ -1924,7 +1924,14 @@ def trigger_cross_session_audit(
     if _cross_session_process is not None and _cross_session_process.poll() is None:
         return {"status": "already_running", "pid": _cross_session_process.pid}
 
-    projects = project if project else ",".join(_load_projects())
+    # Validate project against known projects to prevent command injection
+    known_projects = _load_projects()
+    if project:
+        if project not in known_projects:
+            raise HTTPException(status_code=400, detail=f"Unknown project: {project}")
+        projects = project
+    else:
+        projects = ",".join(known_projects)
 
     cmd = [
         sys.executable,
