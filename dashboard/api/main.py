@@ -377,21 +377,37 @@ def get_findings_by_day(
             continue
         _add_finding(f)
 
-    # 2. Get total tool call count from sessions collection (fast, no full scan)
+    # 2. Build a lookup of session_id → total_tool_calls, then compute
+    # per-audit-day denominators from the sessions each day's findings reference.
     session_results = qb.scroll_all("sessions", filters={"project": project} if project else None, limit=500)
-    total_tool_calls = sum(
-        s.get("payload", {}).get("total_tool_calls", 0) for s in session_results
-    )
+    session_tool_calls: dict[str, int] = {}
+    for s in session_results:
+        p = s.get("payload", {})
+        sid = p.get("session_id", "")
+        if sid:
+            session_tool_calls[sid] = p.get("total_tool_calls", 0)
 
-    # 3. Compute rates per day using total tool calls as denominator.
-    # Findings are dated by publication time (audit cycle day) which may differ
-    # from the session date. Using total tool calls across the range gives a
-    # meaningful rate regardless of date alignment.
+    # Collect unique target_sessions per audit day from the findings we already grouped
+    sessions_per_day: dict[str, set] = {}
+    all_findings = list(archived) + [f for f in _read_live_findings(sc, limit=500)
+                                      if not project or f.get("project") == project]
+    for f in all_findings:
+        date_str = _finding_date(f)
+        if date_str and _in_date_range(date_str, start, end):
+            target = f.get("target_session", "")
+            if target:
+                sessions_per_day.setdefault(date_str, set()).add(target)
+
+    tool_calls_by_day: dict[str, int] = {}
+    for date_str, sids in sessions_per_day.items():
+        tool_calls_by_day[date_str] = sum(session_tool_calls.get(sid, 0) for sid in sids)
+
+    # 3. Compute rates per day using the audited sessions' tool calls as denominator.
     all_dates = sorted(days.keys())
     result = []
     for date_str in all_dates:
         day_data = days[date_str]
-        tc = total_tool_calls  # same denominator for all days
+        tc = tool_calls_by_day.get(date_str, 0)
 
         entry = {
             "date": date_str,
