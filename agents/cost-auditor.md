@@ -55,6 +55,19 @@ You query QDrant independently. Your primary collections:
 - Tool call volume trends (are agents becoming more verbose?)
 - Session count vs. task completion (more sessions for the same amount of work?)
 
+## Data Access Rules
+
+Your task payload includes two lists:
+- **raw_window**: Session IDs for which you MAY query raw events (tool_calls, agent_spawns, code_changes collections). These are the 3 most recent sessions.
+- **summary_sessions**: Session IDs for which you must ONLY read from session_timelines and findings collections. Do NOT query raw event collections for these sessions.
+
+This is a hard constraint. Querying raw events for summary_sessions will be excessively expensive and is not permitted.
+
+When analyzing trends:
+- Use raw events from raw_window sessions for detailed, recent signal
+- Use session timelines + prior findings from summary_sessions for historical context and baselines
+- Your findings should have target_session set to null — cross-session trends are project-level, not session-level
+
 ## Severity Classification
 
 - **critical**: Agent in an infinite loop or runaway resource consumption

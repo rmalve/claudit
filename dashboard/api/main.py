@@ -7,7 +7,9 @@ to the React dashboard. Thin REST layer over existing clients.
 
 import json
 import os
+import subprocess as _subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -224,6 +226,7 @@ def get_findings(
     audit_cycle_id: str | None = Query(None),
     start_date: str | None = Query(None),
     end_date: str | None = Query(None),
+    scope: str | None = Query(None),  # "cross-session", "per-session", or None (all)
     limit: int = Query(200, ge=1, le=500),
 ):
     store = get_store()
@@ -269,6 +272,13 @@ def get_findings(
     # Merge: live first (most recent), then archived
     combined = live + archived
     combined.sort(key=lambda f: f.get("timestamp", ""), reverse=True)
+
+    # Scope filtering: cross-session findings lack a target_session
+    if scope == "cross-session":
+        combined = [f for f in combined if not f.get("target_session")]
+    elif scope == "per-session":
+        combined = [f for f in combined if f.get("target_session")]
+
     combined = combined[:limit]
 
     return {"count": len(combined), "findings": combined}
@@ -357,6 +367,13 @@ def get_findings_by_day(
         return ""
 
     def _add_finding(finding: dict):
+        # Exclude cross-session findings — they have no per-session denominator.
+        # Cross-session findings have target_session as null or a non-UUID
+        # placeholder like "cross-session". Per-session findings always have a
+        # valid UUID session ID.
+        target = finding.get("target_session") or ""
+        if not target or len(target) < 32 or "-" not in target:
+            return
         date_str = _finding_date(finding)
         if not date_str:
             return
@@ -367,9 +384,7 @@ def get_findings_by_day(
         auditor = finding.get("auditor_type", finding.get("auditor", "director"))
         days[date_str]["_counts"][auditor] = days[date_str]["_counts"].get(auditor, 0) + 1
         days[date_str]["_total"] += 1
-        target = finding.get("target_session", "")
-        if target:
-            days[date_str]["_sessions"].add(target)
+        days[date_str]["_sessions"].add(target)
 
     # Archived from SQLite
     for f in store.query_findings(project=project, limit=5000):
@@ -1848,3 +1863,150 @@ def get_stats(
         "stream_directives_total": sc.stream_length("audit:directives"),
         "stream_escalations_total": sc.stream_length("audit:escalations"),
     }
+
+
+# ── Cross-Session Audit ──
+
+_cross_session_process: _subprocess.Popen | None = None
+_cross_session_log_path: str | None = None
+_cross_session_log_file = None
+_cross_session_exit_code: int | None = None
+
+
+def _parse_cross_session_phases(content: str) -> dict:
+    """Parse phase completion from cross-session orchestrator log output.
+
+    Returns a dict of phase keys to {label, status} where status is one of:
+    pending, in_progress, complete.
+    """
+    phases = {
+        "phase1": {"label": "Director assigns", "status": "pending"},
+        "phase3": {"label": "Auditors analyze", "status": "pending"},
+        "phase4": {"label": "Director synthesizes", "status": "pending"},
+        "phase6": {"label": "Archive", "status": "pending"},
+    }
+    phase_order = ["phase1", "phase3", "phase4", "phase6"]
+    phase_markers = {
+        "phase1": "Phase 1:",
+        "phase3": "Phase 3:",
+        "phase4": "Phase 4:",
+        "phase6": "Phase 6:",
+    }
+
+    found_phases = []
+    for key in phase_order:
+        if phase_markers[key] in content:
+            found_phases.append(key)
+
+    for i, key in enumerate(found_phases):
+        if i < len(found_phases) - 1:
+            # Next phase started, so this one is complete
+            phases[key]["status"] = "complete"
+        else:
+            # Last found phase is still in progress
+            phases[key]["status"] = "in_progress"
+
+    if "Audit cycle complete" in content:
+        for key in phases:
+            phases[key]["status"] = "complete"
+
+    return phases
+
+
+@app.post("/api/audit/cross-session")
+def trigger_cross_session_audit(
+    project: str | None = Query(None),
+):
+    """Trigger an on-demand cross-session audit cycle."""
+    global _cross_session_process, _cross_session_log_path, _cross_session_log_file, _cross_session_exit_code
+
+    # Guard against concurrent runs
+    if _cross_session_process is not None and _cross_session_process.poll() is None:
+        return {"status": "already_running", "pid": _cross_session_process.pid}
+
+    # Validate project against known projects to prevent command injection (CWE-78).
+    # Use the allowlisted value from projects.json, never the raw user input.
+    known_projects = _load_projects()
+    if project:
+        matched = [p for p in known_projects if p == project]
+        if not matched:
+            raise HTTPException(status_code=400, detail=f"Unknown project: {project}")
+        projects = matched[0]  # Use value from allowlist, not user input
+    else:
+        projects = ",".join(known_projects)
+
+    cmd = [
+        sys.executable,
+        str(Path(__file__).resolve().parent.parent.parent / "orchestrator.py"),
+        "--mode", "cross-session",
+        "--projects", projects,
+    ]
+
+    _cross_session_exit_code = None
+    _cross_session_log_file = tempfile.NamedTemporaryFile(
+        mode='w', suffix='.log', prefix='cross-session-', delete=False, encoding='utf-8'
+    )
+    _cross_session_log_path = _cross_session_log_file.name
+
+    _cross_session_process = _subprocess.Popen(
+        cmd,
+        stdout=_cross_session_log_file,
+        stderr=_subprocess.STDOUT,
+    )
+
+    return {
+        "status": "started",
+        "pid": _cross_session_process.pid,
+        "project": project or "all",
+    }
+
+
+@app.get("/api/audit/cross-session/status")
+def cross_session_audit_status():
+    """Check cross-session audit status including phase completion."""
+    global _cross_session_process, _cross_session_log_path, _cross_session_log_file, _cross_session_exit_code
+
+    # Parse log for phase completion (works for both running and completed states)
+    phases = {}
+    if _cross_session_log_path:
+        try:
+            with open(_cross_session_log_path, 'r', encoding='utf-8', errors='replace') as f:
+                content = f.read()
+            phases = _parse_cross_session_phases(content)
+        except Exception:
+            pass
+
+    # No process ever started (or was reset by a new trigger)
+    if _cross_session_process is None:
+        if _cross_session_exit_code is not None:
+            # Process completed on a previous poll — keep returning completed
+            # so the frontend can display final phases and logs
+            return {"status": "completed", "exit_code": _cross_session_exit_code, "phases": phases}
+        return {"status": "idle", "phases": {}}
+
+    if _cross_session_process.poll() is None:
+        return {"status": "running", "pid": _cross_session_process.pid, "phases": phases}
+
+    exit_code = _cross_session_process.returncode
+    _cross_session_exit_code = exit_code
+    # Close the log file handle
+    if _cross_session_log_file:
+        try:
+            _cross_session_log_file.close()
+        except Exception:
+            pass
+    _cross_session_process = None
+    return {"status": "completed", "exit_code": exit_code, "phases": phases}
+
+
+@app.get("/api/audit/cross-session/logs")
+def cross_session_audit_logs():
+    """Return rolling log output from the current/last cross-session audit."""
+    global _cross_session_log_path
+    if not _cross_session_log_path:
+        return {"logs": ""}
+    try:
+        with open(_cross_session_log_path, 'r', encoding='utf-8', errors='replace') as f:
+            return {"logs": f.read()}
+    except Exception:
+        return {"logs": ""}
