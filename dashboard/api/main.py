@@ -331,8 +331,10 @@ def get_findings_by_day(
     end = _parse_date_param(end_date)
 
     # 1. Collect all findings (archived + live) grouped by day + auditor.
+    # Also collect target_sessions per day in the same pass (avoids a
+    # second iteration and a redundant Redis round-trip).
     # Use the audit_cycle_id date (local time) to group, not the UTC timestamp.
-    days: dict[str, dict] = {}  # date_str -> {auditor: count, ...}
+    days: dict[str, dict] = {}  # date_str -> {_counts, _total, _sessions}
 
     def _finding_date(finding: dict) -> str:
         """Extract the local date from audit_cycle_id or fall back to timestamp."""
@@ -361,14 +363,16 @@ def get_findings_by_day(
         if not _in_date_range(date_str, start, end):
             return
         if date_str not in days:
-            days[date_str] = {"_counts": {}, "_total": 0}
+            days[date_str] = {"_counts": {}, "_total": 0, "_sessions": set()}
         auditor = finding.get("auditor_type", finding.get("auditor", "director"))
         days[date_str]["_counts"][auditor] = days[date_str]["_counts"].get(auditor, 0) + 1
         days[date_str]["_total"] += 1
+        target = finding.get("target_session", "")
+        if target:
+            days[date_str]["_sessions"].add(target)
 
     # Archived from SQLite
-    archived = store.query_findings(project=project, limit=5000)
-    for f in archived:
+    for f in store.query_findings(project=project, limit=5000):
         _add_finding(f)
 
     # Live from Redis
@@ -377,21 +381,28 @@ def get_findings_by_day(
             continue
         _add_finding(f)
 
-    # 2. Get total tool call count from sessions collection (fast, no full scan)
+    # 2. Build a lookup of session_id → total_tool_calls, then compute
+    # per-audit-day denominators from the sessions each day's findings reference.
     session_results = qb.scroll_all("sessions", filters={"project": project} if project else None, limit=500)
-    total_tool_calls = sum(
-        s.get("payload", {}).get("total_tool_calls", 0) for s in session_results
-    )
+    session_tool_calls: dict[str, int] = {}
+    for s in session_results:
+        p = s.get("payload", {})
+        sid = p.get("session_id", "")
+        if sid:
+            session_tool_calls[sid] = p.get("total_tool_calls", 0)
 
-    # 3. Compute rates per day using total tool calls as denominator.
-    # Findings are dated by publication time (audit cycle day) which may differ
-    # from the session date. Using total tool calls across the range gives a
-    # meaningful rate regardless of date alignment.
+    tool_calls_by_day: dict[str, int] = {}
+    for date_str, day_data in days.items():
+        tool_calls_by_day[date_str] = sum(
+            session_tool_calls.get(sid, 0) for sid in day_data["_sessions"]
+        )
+
+    # 3. Compute rates per day using the audited sessions' tool calls as denominator.
     all_dates = sorted(days.keys())
     result = []
     for date_str in all_dates:
         day_data = days[date_str]
-        tc = total_tool_calls  # same denominator for all days
+        tc = tool_calls_by_day.get(date_str, 0)
 
         entry = {
             "date": date_str,
