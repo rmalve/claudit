@@ -16,6 +16,7 @@ export default function Findings() {
     if (searchParams.get('severity')) initial.severity = searchParams.get('severity')
     if (searchParams.get('auditor_type')) initial.auditor_type = searchParams.get('auditor_type')
     if (searchParams.get('finding_type')) initial.finding_type = searchParams.get('finding_type')
+    if (searchParams.get('scope')) initial.scope = searchParams.get('scope')
     return initial
   })
   const [selected, setSelected] = useState(null)
@@ -24,6 +25,7 @@ export default function Findings() {
   if (filters.severity) params.set('severity', filters.severity)
   if (filters.auditor_type) params.set('auditor_type', filters.auditor_type)
   if (filters.finding_type) params.set('finding_type', filters.finding_type)
+  if (filters.scope) params.set('scope', filters.scope)
   params.set('limit', '100')
 
   const { data, loading } = useApi(`/api/findings?${params}`, { refreshInterval: 15000 })
@@ -46,6 +48,7 @@ export default function Findings() {
           { key: 'severity', label: 'Severity', options: severityOptions },
           { key: 'auditor_type', label: 'Auditor', options: auditorOptions },
           { key: 'finding_type', label: 'Type', options: typeOptions },
+          { key: 'scope', label: 'Scope', options: ['per-session', 'cross-session'] },
         ]}
         values={filters}
         onChange={setFilters}
@@ -64,6 +67,11 @@ export default function Findings() {
           >
             <div className="flex items-start gap-3">
               <SeverityBadge severity={f.severity} />
+              {!f.target_session && (
+                <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-brand-accent/15 text-brand-accent">
+                  Cross-Session
+                </span>
+              )}
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-medium text-brand-text truncate">
@@ -74,7 +82,7 @@ export default function Findings() {
                   <span>Auditor: {f.auditor_type || f.auditor || 'director'}</span>
                   <span>Confidence: {f.confidence != null ? Number(f.confidence).toFixed(2) : '—'}</span>
                   <span>Project: {f.project || '—'}</span>
-                  <span>Session: {(f.target_session || '—').slice(0, 8)}</span>
+                  <span>Session: {f.target_session ? f.target_session.slice(0, 8) : 'Project-level'}</span>
                 </div>
               </div>
               <span className="text-xs text-brand-text-tertiary whitespace-nowrap">
