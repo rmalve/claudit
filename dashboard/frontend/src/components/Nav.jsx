@@ -30,14 +30,14 @@ export default function Nav() {
           className="h-20"
         />
       </NavLink>
-      <div className="flex gap-0.5 overflow-x-auto">
+      <div className="flex min-w-0 flex-1">
         {links.map(({ to, label }) => (
           <NavLink
             key={to}
             to={to}
             end={to === '/'}
             className={({ isActive }) =>
-              `px-3 py-1.5 rounded-md text-sm font-medium transition-colors whitespace-nowrap ${
+              `px-2 py-1.5 rounded-md text-sm font-medium transition-colors truncate text-center ${
                 isActive
                   ? 'bg-brand-accent/10 text-brand-accent-dark'
                   : 'text-brand-text-tertiary hover:text-brand-text hover:bg-brand-bg-secondary'
