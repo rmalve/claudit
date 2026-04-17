@@ -33,6 +33,19 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class TurnEvent:
+    """A single chronological event within a conversation turn."""
+    type: str = ""          # "user_text", "thinking", "assistant_text", "tool_use", "tool_result"
+    timestamp: str = ""
+    text: str = ""          # content (truncated)
+    tool_name: str = ""     # for tool_use events
+    tool_id: str = ""       # for tool_use / tool_result linking
+    input_summary: str = "" # for tool_use events
+    is_error: bool = False  # for tool_result errors
+    subagent_type: str = "" # for Agent tool_use events
+
+
+@dataclass
 class ConversationTurn:
     """A single user-prompt-to-response cycle."""
     prompt_id: str = ""
@@ -47,6 +60,7 @@ class ConversationTurn:
     tool_results: list[dict] = field(default_factory=list)
     subagent_spawns: list[str] = field(default_factory=list)
     entry_count: int = 0
+    events: list[TurnEvent] = field(default_factory=list)  # chronological event stream
 
 
 @dataclass
@@ -74,7 +88,7 @@ def _compute_project_hash(project_root: str) -> str:
     """Compute the Claude Code project directory hash from a project root path.
 
     Replaces \\, /, and : with - to match Claude Code's directory naming.
-    E.g. /home/user/my-project -> -home-user-my-project
+    E.g. C:\\Users\\RA\\Documents\\RPi -> C--Users-RA-Documents-RPi
     """
     # Normalize to forward slashes, strip trailing
     normalized = project_root.replace("\\", "/").rstrip("/")
@@ -260,43 +274,67 @@ def _group_into_turns(entries: list[dict], uuid_to_prompt: dict[str, str], sessi
                     if text and not is_system_context:
                         # Override system context with real user input
                         turn.user_text = text[:2000]
+                    if text:
+                        turn.events.append(TurnEvent(
+                            type="user_text", timestamp=ts, text=text[:2000],
+                        ))
 
                 elif entry_type == "assistant" and block_type == "text":
                     text = block.get("text", "")
                     if text:
                         turn.assistant_texts.append(text[:2000])
+                        turn.events.append(TurnEvent(
+                            type="assistant_text", timestamp=ts, text=text[:2000],
+                        ))
 
                 elif entry_type == "assistant" and block_type == "thinking":
                     turn.thinking_count += 1
+                    thinking_text = block.get("thinking", "")
+                    turn.events.append(TurnEvent(
+                        type="thinking", timestamp=ts,
+                        text=thinking_text[:1000] if thinking_text else "(reasoning)",
+                    ))
 
                 elif entry_type == "assistant" and block_type == "tool_use":
                     tool_name = block.get("name", "")
                     tool_id = block.get("id", "")
                     tool_input = block.get("input", {})
+                    input_summary = _summarize_tool_input(tool_name, tool_input)
                     turn.tool_calls.append({
                         "name": tool_name,
                         "id": tool_id,
-                        "input_summary": _summarize_tool_input(tool_name, tool_input),
+                        "input_summary": input_summary,
                     })
+                    subagent = ""
                     if tool_name == "Agent":
-                        child = tool_input.get("subagent_type", "general")
-                        turn.subagent_spawns.append(child)
+                        subagent = tool_input.get("subagent_type", "general")
+                        turn.subagent_spawns.append(subagent)
+                    turn.events.append(TurnEvent(
+                        type="tool_use", timestamp=ts, tool_name=tool_name,
+                        tool_id=tool_id, input_summary=input_summary,
+                        subagent_type=subagent,
+                    ))
 
                 elif entry_type == "user" and block_type == "tool_result":
                     tool_use_id = block.get("tool_use_id", "")
                     result_content = block.get("content", "")
+                    is_error = block.get("is_error", False)
                     if isinstance(result_content, list):
                         result_text = " ".join(
-                            c.get("text", "")[:200] for c in result_content if c.get("type") == "text"
+                            c.get("text", "")[:300] for c in result_content if c.get("type") == "text"
                         )
                     elif isinstance(result_content, str):
-                        result_text = result_content[:200]
+                        result_text = result_content[:300]
                     else:
                         result_text = ""
                     turn.tool_results.append({
                         "tool_use_id": tool_use_id,
                         "content_summary": result_text[:500],
                     })
+                    turn.events.append(TurnEvent(
+                        type="tool_result", timestamp=ts, text=result_text[:500],
+                        tool_id=tool_use_id, is_error=is_error,
+                    ))
 
         turn.entry_count = len(turn_entries)
         if timestamps:

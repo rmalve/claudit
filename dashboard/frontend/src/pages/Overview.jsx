@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useApi } from '../hooks/useApi'
 
@@ -15,6 +15,7 @@ import Typography from '@mui/material/Typography'
 import Autocomplete from '@mui/material/Autocomplete'
 import TextField from '@mui/material/TextField'
 import Chip from '@mui/material/Chip'
+import Button from '@mui/material/Button'
 import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider'
 import { AdapterDayjs } from '@mui/x-date-pickers/AdapterDayjs'
 import { DatePicker } from '@mui/x-date-pickers/DatePicker'
@@ -45,6 +46,10 @@ export default function Overview() {
   const [selectedProjects, setSelectedProjects] = useState([])
   const [startDate, setStartDate] = useState(dayjs().subtract(7, 'day'))
   const [endDate, setEndDate] = useState(dayjs())
+  const [crossSessionStatus, setCrossSessionStatus] = useState('idle')
+  const [crossSessionPhases, setCrossSessionPhases] = useState({})
+  const [showLogModal, setShowLogModal] = useState(false)
+  const [logContent, setLogContent] = useState('')
 
   const projectParam = selectedProjects.length === 1 ? selectedProjects[0] : ''
   const projectQuery = projectParam ? `project=${projectParam}&` : ''
@@ -57,6 +62,10 @@ export default function Overview() {
   const { data: confData } = useApi(`/api/findings/by-confidence?${projectQuery}${dateParams}`, { refreshInterval: 15000 })
   const { data: dirStatusData } = useApi(`/api/directives/by-status?${projectQuery}`, { refreshInterval: 15000 })
   const { data: clusterData } = useApi(`/api/findings/clusters?${projectQuery}`, { refreshInterval: 30000 })
+  const { data: crossSessionData } = useApi(
+    `/api/findings?scope=cross-session${projectQuery ? `&${projectQuery}` : ''}`,
+    { refreshInterval: 15000 }
+  )
 
   const allProjects = stats?.active_projects || []
   const sev = stats?.findings_by_severity || {}
@@ -128,6 +137,54 @@ export default function Overview() {
     })),
     [clusterData]
   )
+
+  const triggerCrossSession = async () => {
+    setCrossSessionStatus('running')
+    setCrossSessionPhases({})
+    setLogContent('')
+    try {
+      const projectParam = selectedProjects.length === 1 ? `?project=${selectedProjects[0]}` : ''
+      const res = await fetch(`/api/audit/cross-session${projectParam}`, { method: 'POST' })
+      const data = await res.json()
+      if (data.status === 'already_running') {
+        setCrossSessionStatus('running')
+      }
+    } catch {
+      setCrossSessionStatus('idle')
+    }
+  }
+
+  useEffect(() => {
+    if (crossSessionStatus !== 'running') return
+    // Fetch immediately on entering 'running' state
+    const fetchStatus = async () => {
+      try {
+        const res = await fetch('/api/audit/cross-session/status')
+        const data = await res.json()
+        setCrossSessionPhases(data.phases || {})
+        if (data.status !== 'running') {
+          setCrossSessionStatus(data.status)
+        }
+      } catch { /* ignore */ }
+    }
+    fetchStatus()
+    const interval = setInterval(fetchStatus, 3000)
+    return () => clearInterval(interval)
+  }, [crossSessionStatus])
+
+  useEffect(() => {
+    if (!showLogModal) return
+    const fetchLogs = async () => {
+      try {
+        const res = await fetch('/api/audit/cross-session/logs')
+        const data = await res.json()
+        setLogContent(data.logs || '')
+      } catch { /* ignore */ }
+    }
+    fetchLogs()
+    const interval = setInterval(fetchLogs, 2000)
+    return () => clearInterval(interval)
+  }, [showLogModal])
 
   const handleSeverityPieClick = (entry) => {
     if (entry?.name) navigate(`/findings?severity=${entry.name}`)
@@ -219,6 +276,54 @@ export default function Overview() {
           <Typography variant="caption" color="text.disabled" sx={{ ml: 'auto' }}>
             {stats?.total_findings || 0} findings in range
           </Typography>
+          <Button
+            variant="outlined"
+            size="small"
+            disabled={crossSessionStatus === 'running'}
+            onClick={triggerCrossSession}
+            sx={{
+              borderColor: 'var(--brand-accent)',
+              color: 'var(--brand-accent)',
+              '&:hover': { borderColor: 'var(--brand-accent)', backgroundColor: 'rgba(217,119,87,0.08)' },
+              textTransform: 'none',
+              fontSize: '0.75rem',
+            }}
+          >
+            {crossSessionStatus === 'running' ? 'Cross-Session Audit Running...' : 'Run Cross-Session Audit'}
+          </Button>
+          {crossSessionStatus !== 'idle' && (
+            <Box
+              sx={{ display: 'flex', gap: 0.5, alignItems: 'center', cursor: 'pointer', ml: 1 }}
+              onClick={() => setShowLogModal(true)}
+              title="Click to view audit logs"
+            >
+              {[
+                { key: 'phase1', label: 'Assign' },
+                { key: 'phase3', label: 'Audit' },
+                { key: 'phase4', label: 'Synthesize' },
+                { key: 'phase6', label: 'Archive' },
+              ].map(({ key, label }) => {
+                const phase = crossSessionPhases[key]
+                const status = phase?.status || 'pending'
+                const color = status === 'complete' ? 'var(--brand-green, #4D8C00)'
+                  : status === 'in_progress' ? 'var(--brand-accent, #D97757)'
+                  : 'var(--brand-bg-tertiary, #333)'
+                return (
+                  <Box key={key} sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                    <Box sx={{
+                      width: 10, height: 10, borderRadius: '50%',
+                      backgroundColor: color,
+                      ...(status === 'in_progress' ? {
+                        animation: 'pulse 1.5s ease-in-out infinite',
+                        '@keyframes pulse': { '0%, 100%': { opacity: 1 }, '50%': { opacity: 0.4 } }
+                      } : {})
+                    }} />
+                    <Typography sx={{ fontSize: '8px', color: 'text.disabled', mt: 0.25 }}>{label}</Typography>
+                  </Box>
+                )
+              })}
+            </Box>
+          )}
         </Paper>
 
         {/* Row 1: Severity pie + Auditor line chart */}
@@ -394,6 +499,55 @@ export default function Overview() {
           </Paper>
         </Box>
 
+        {/* Cross-Session Trends */}
+        <Paper sx={{ p: 2 }}>
+          <Typography variant="subtitle2" color="text.disabled" gutterBottom>
+            CROSS-SESSION TRENDS
+          </Typography>
+          {(() => {
+            const csFindings = (crossSessionData?.findings || []).filter(f => !f.target_session)
+            if (csFindings.length === 0) {
+              return (
+                <Box sx={{ height: 160, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <Typography color="text.disabled">
+                    No cross-session audits have been run. Use the button above to trigger one.
+                  </Typography>
+                </Box>
+              )
+            }
+            const byAuditor = {}
+            for (const f of csFindings) {
+              const aud = f.auditor_type || 'unknown'
+              if (!byAuditor[aud]) byAuditor[aud] = { auditor: aud, findings: 0 }
+              byAuditor[aud].findings += 1
+            }
+            const chartData = Object.values(byAuditor).sort((a, b) => b.findings - a.findings)
+
+            return (
+              <ResponsiveContainer width="100%" height={160}>
+                <BarChart data={chartData} layout="vertical">
+                  <CartesianGrid strokeDasharray="3 3" stroke={gridColor} />
+                  <XAxis type="number" tick={tickStyle} />
+                  <YAxis dataKey="auditor" type="category" tick={tickStyle} width={80} />
+                  <Tooltip contentStyle={getTooltipStyle()} />
+                  <Bar
+                    dataKey="findings"
+                    fill="#D97757"
+                    name="Findings"
+                    radius={[0, 4, 4, 0]}
+                    style={{ cursor: 'pointer' }}
+                    onClick={(data) => {
+                      if (data?.auditor) {
+                        window.location.href = `/findings?scope=cross-session&auditor_type=${data.auditor}`
+                      }
+                    }}
+                  />
+                </BarChart>
+              </ResponsiveContainer>
+            )
+          })()}
+        </Paper>
+
         {/* Stream Activity */}
         <Paper sx={{ p: 2 }}>
           <Typography variant="subtitle2" color="text.disabled" gutterBottom>
@@ -405,6 +559,30 @@ export default function Overview() {
             ))}
           </Box>
         </Paper>
+
+        {showLogModal && (
+          <Box sx={{
+            position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.6)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1300
+          }} onClick={() => setShowLogModal(false)}>
+            <Paper sx={{
+              width: '80%', maxWidth: 900, maxHeight: '70vh', p: 3,
+              display: 'flex', flexDirection: 'column'
+            }} onClick={e => e.stopPropagation()}>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                <Typography variant="h6">Cross-Session Audit Logs</Typography>
+                <Button size="small" onClick={() => setShowLogModal(false)}>Close</Button>
+              </Box>
+              <Box sx={{
+                flex: 1, overflow: 'auto', backgroundColor: '#1a1a1a', borderRadius: 1,
+                p: 2, fontFamily: 'monospace', fontSize: '12px', color: '#e0e0e0',
+                whiteSpace: 'pre-wrap', wordBreak: 'break-word', minHeight: 200, maxHeight: '55vh',
+              }} ref={el => { if (el) el.scrollTop = el.scrollHeight }}>
+                {logContent || 'Waiting for logs...'}
+              </Box>
+            </Paper>
+          </Box>
+        )}
       </Box>
     </LocalizationProvider>
   )

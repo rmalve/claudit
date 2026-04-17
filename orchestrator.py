@@ -16,9 +16,11 @@ Lifecycle rules:
 - Graceful shutdown on SIGINT/SIGTERM
 
 Usage:
-    python orchestrator.py                    # start all agents
-    python orchestrator.py --director-only    # start Director only
-    python orchestrator.py --auditors-only    # start auditors only
+    python orchestrator.py                              # per-session audit (default)
+    python orchestrator.py --mode cross-session         # cross-session audit (drift+cost)
+    python orchestrator.py --projects foo,bar            # filter to specific projects
+    python orchestrator.py --director-only              # start Director only
+    python orchestrator.py --auditors-only              # start auditors only
 """
 
 import asyncio
@@ -127,10 +129,21 @@ class Orchestrator:
     and restarts failed processes.
     """
 
-    AUDITOR_TYPES = ["trace", "safety", "policy", "hallucination", "drift", "cost"]
+    PER_SESSION_AUDITORS = ["trace", "safety", "policy", "hallucination"]
+    CROSS_SESSION_AUDITORS = ["drift", "cost"]
+    AUDITOR_TYPES = PER_SESSION_AUDITORS + CROSS_SESSION_AUDITORS
 
-    def __init__(self):
-        self.projects = load_projects()
+    def __init__(self, mode: str = "per-session", project_names: list[str] | None = None):
+        self.mode = mode
+        all_projects = load_projects()
+
+        # Optional filter: only keep projects whose name matches the override list
+        if project_names is not None:
+            allowed = set(project_names)
+            self.projects = [p for p in all_projects if p.name in allowed]
+        else:
+            self.projects = all_projects
+
         self.processes: dict[str, ManagedProcess] = {}
         self._shutdown = False
 
@@ -149,15 +162,30 @@ class Orchestrator:
         self._register_processes()
 
     def _register_processes(self) -> None:
-        """Register all agent processes for phased orchestration.
+        """Register agent processes based on orchestrator mode.
 
-        Phases:
-          1. Director (assign mode) — queries data, publishes tasks
+        Per-session mode phases:
+          1. Director (per-session-assign) — queries data, publishes tasks
           2. Trace Auditor — builds timelines from raw events
-          3. Other 5 Auditors (parallel) — read timelines + raw data, publish findings
-          4. Director (synthesize mode) — reads findings, cross-checks, writes report
+          3. Safety, policy, hallucination auditors (parallel)
+          4. Director (synthesize) — reads findings, writes report
+
+        Cross-session mode phases:
+          1. Director (cross-session-assign) — queries data, publishes tasks
+          3. Drift + cost auditors (parallel)
+          4. Director (synthesize) — reads findings, writes report
+
+        Both modes always register director:assign and director:synthesize.
         """
-        # Phase 1: Director assigns tasks
+        # Determine assign mode string and auditor list based on orchestrator mode
+        if self.mode == "cross-session":
+            assign_mode = "cross-session-assign"
+            auditor_types = self.CROSS_SESSION_AUDITORS
+        else:
+            assign_mode = "per-session-assign"
+            auditor_types = self.PER_SESSION_AUDITORS
+
+        # Director assigns tasks
         self.processes["director:assign"] = ManagedProcess(
             name="Director (assign)",
             role="director",
@@ -165,28 +193,13 @@ class Orchestrator:
                 self._python,
                 str(AGENTS_DIR / "run_director.py"),
                 "--projects", self._project_csv,
-                "--mode", "assign",
+                "--mode", assign_mode,
                 "--max-turns", "100",
             ],
         )
 
-        # Phase 2: Trace Auditor
-        self.processes["auditor:trace"] = ManagedProcess(
-            name="Trace Auditor",
-            role="auditor:trace",
-            cmd=[
-                self._python,
-                str(AGENTS_DIR / "run_auditor.py"),
-                "--type", "trace",
-                "--projects", self._project_csv,
-                "--max-turns", "50",
-            ],
-        )
-
-        # Phase 3: Other auditors
-        for auditor_type in self.AUDITOR_TYPES:
-            if auditor_type == "trace":
-                continue
+        # Register auditors for this mode
+        for auditor_type in auditor_types:
             key = f"auditor:{auditor_type}"
             self.processes[key] = ManagedProcess(
                 name=f"{auditor_type.title()} Auditor",
@@ -200,7 +213,7 @@ class Orchestrator:
                 ],
             )
 
-        # Phase 4: Director synthesizes findings
+        # Director synthesizes findings
         self.processes["director:synthesize"] = ManagedProcess(
             name="Director (synthesize)",
             role="director",
@@ -477,21 +490,116 @@ class Orchestrator:
         for proc in procs:
             proc.state = ProcessState.STOPPED
 
-    def start(self, director_only: bool = False, auditors_only: bool = False) -> None:
+    def _run_per_session_cycle(self) -> None:
+        """Run per-session audit phases 1-5.
+
+        Phase 1: Director assigns tasks (per-session-assign)
+        Phase 2: Trace Auditor builds timelines
+        Phase 3: Safety, policy, hallucination auditors in parallel
+        Phase 4: Director synthesizes report
+        Phase 5: Mark audited events in QDrant
+        """
+        # Pre-check: if no pending events to audit, skip LLM-powered phases.
+        # Cycle-boundary checks (Phase 6) still run to advance directive deadlines.
+        try:
+            from observability.qdrant_backend import QdrantBackend
+            pending = QdrantBackend().count_pending_audit()
+            logger.info("Pending events to audit: %d", pending)
+        except Exception as e:
+            logger.warning("Failed to check pending audit count: %s", e)
+            pending = None  # Unknown — proceed as normal
+
+        if pending == 0:
+            logger.info("═══ No pending events; skipping audit phases 1-5 ═══")
+            return
+
+        # Phase 1: Director assigns tasks
+        assign_proc = self.processes["director:assign"]
+        if not self._run_phase(assign_proc, "Phase 1: Director assigns tasks"):
+            logger.critical("Director assignment failed. Cannot proceed.")
+            self.shutdown()
+            return
+
+        # Phase 2: Trace Auditor builds timelines
+        trace_proc = self.processes["auditor:trace"]
+        self._run_phase(trace_proc, "Phase 2: Trace Auditor builds timelines")
+
+        # Phase 3: Other per-session auditors in parallel
+        other_auditors = [
+            proc for key, proc in self.processes.items()
+            if key.startswith("auditor:") and key != "auditor:trace"
+        ]
+        self._run_parallel_phase(other_auditors, "Phase 3: Auditors analyze findings")
+
+        # Phase 4: Director synthesizes
+        synth_proc = self.processes["director:synthesize"]
+        self._run_phase(synth_proc, "Phase 4: Director synthesizes report")
+
+        # Phase 5: Mark audited events in QDrant
+        logger.info("═══ Phase 5: Marking audited events ═══")
+        try:
+            from observability.qdrant_backend import QdrantBackend
+            qb = QdrantBackend()
+            # Find sessions with unaudited events
+            unaudited = qb.scroll_all("tool_calls", filters={"audited__ne": True}, limit=10000)
+            session_ids = set(p.get("payload", {}).get("session_id", "") for p in unaudited)
+            session_ids.discard("")
+
+            total_marked = 0
+            for sid in session_ids:
+                count = qb.mark_session_audited(sid)
+                total_marked += count
+                logger.info("  Marked %d events as audited for session %s", count, sid[:12])
+
+            logger.info("Total: %d events marked as audited across %d sessions",
+                        total_marked, len(session_ids))
+        except Exception as e:
+            logger.warning("Failed to mark audited events: %s", e)
+
+    def _run_cross_session_cycle(self) -> None:
+        """Run cross-session audit phases.
+
+        Phase 1: Director assigns tasks (cross-session-assign)
+        Phase 3: Drift + cost auditors in parallel
+        Phase 4: Director synthesizes report
+        (No Phase 2 trace, no Phase 5 marking)
+        """
+        # Phase 1: Director assigns tasks
+        assign_proc = self.processes["director:assign"]
+        if not self._run_phase(assign_proc, "Phase 1: Director assigns tasks"):
+            logger.critical("Director assignment failed. Cannot proceed.")
+            self.shutdown()
+            return
+
+        # Phase 3: Cross-session auditors in parallel (explicit filter)
+        cs_keys = {f"auditor:{a}" for a in self.CROSS_SESSION_AUDITORS}
+        cs_auditors = [
+            proc for key, proc in self.processes.items()
+            if key in cs_keys
+        ]
+        self._run_parallel_phase(cs_auditors, "Phase 3: Cross-session auditors analyze")
+
+        # Phase 4: Director synthesizes
+        synth_proc = self.processes["director:synthesize"]
+        self._run_phase(synth_proc, "Phase 4: Director synthesizes report")
+
+    def start(self) -> None:
         """Start the audit platform with phased orchestration.
 
-        Phase 1: Director assigns tasks (queries data, publishes to audit:tasks)
-        Phase 2: Trace Auditor builds timelines (reads tasks, publishes to session_timelines)
-        Phase 3: Other 5 auditors run in parallel (read timelines + tasks, publish findings)
-        Phase 4: Director synthesizes (reads findings, cross-checks, writes report)
+        Dispatches to per-session or cross-session cycle based on self.mode,
+        then runs Phase 6 archival unconditionally.
         """
         project_names = [p.name for p in self.projects]
 
         logger.info("=" * 60)
         logger.info("LLM Observability Audit Platform")
         logger.info("Audit cycle: %s", self.audit_cycle_id)
+        logger.info("Mode: %s", self.mode)
         logger.info("Active projects: %s", ", ".join(project_names))
-        logger.info("Orchestration: phased (assign → trace → auditors → synthesize)")
+        if self.mode == "per-session":
+            logger.info("Orchestration: phased (assign → trace → auditors → synthesize)")
+        else:
+            logger.info("Orchestration: phased (assign → drift+cost → synthesize)")
         logger.info("=" * 60)
 
         # Verify Redis
@@ -502,61 +610,11 @@ class Orchestrator:
         logger.info("Redis: OK")
 
         try:
-            # Pre-check: if no pending events to audit, skip LLM-powered phases.
-            # Cycle-boundary checks (Phase 6) still run to advance directive deadlines.
-            try:
-                from observability.qdrant_backend import QdrantBackend
-                pending = QdrantBackend().count_pending_audit()
-                logger.info("Pending events to audit: %d", pending)
-            except Exception as e:
-                logger.warning("Failed to check pending audit count: %s", e)
-                pending = None  # Unknown — proceed as normal
-
-            if pending == 0:
-                logger.info("═══ No pending events; skipping audit phases 1-5 ═══")
+            # Dispatch to mode-specific cycle
+            if self.mode == "cross-session":
+                self._run_cross_session_cycle()
             else:
-                # Phase 1: Director assigns tasks
-                assign_proc = self.processes["director:assign"]
-                if not self._run_phase(assign_proc, "Phase 1: Director assigns tasks"):
-                    logger.critical("Director assignment failed. Cannot proceed.")
-                    self.shutdown()
-                    return
-
-                # Phase 2: Trace Auditor builds timelines
-                trace_proc = self.processes["auditor:trace"]
-                self._run_phase(trace_proc, "Phase 2: Trace Auditor builds timelines")
-
-                # Phase 3: Other 5 auditors in parallel
-                other_auditors = [
-                    proc for key, proc in self.processes.items()
-                    if key.startswith("auditor:") and key != "auditor:trace"
-                ]
-                self._run_parallel_phase(other_auditors, "Phase 3: Auditors analyze findings")
-
-                # Phase 4: Director synthesizes
-                synth_proc = self.processes["director:synthesize"]
-                self._run_phase(synth_proc, "Phase 4: Director synthesizes report")
-
-                # Phase 5: Mark audited events in QDrant
-                logger.info("═══ Phase 5: Marking audited events ═══")
-                try:
-                    from observability.qdrant_backend import QdrantBackend
-                    qb = QdrantBackend()
-                    # Find sessions with unaudited events
-                    unaudited = qb.scroll_all("tool_calls", filters={"audited__ne": True}, limit=10000)
-                    session_ids = set(p.get("payload", {}).get("session_id", "") for p in unaudited)
-                    session_ids.discard("")
-
-                    total_marked = 0
-                    for sid in session_ids:
-                        count = qb.mark_session_audited(sid)
-                        total_marked += count
-                        logger.info("  Marked %d events as audited for session %s", count, sid[:12])
-
-                    logger.info("Total: %d events marked as audited across %d sessions",
-                                total_marked, len(session_ids))
-                except Exception as e:
-                    logger.warning("Failed to mark audited events: %s", e)
+                self._run_per_session_cycle()
 
             # Phase 6: Archive streams to SQLite + run cycle-boundary checks
             logger.info("═══ Phase 6: Archiving streams to SQLite ═══")
@@ -615,16 +673,19 @@ def main():
         description="LLM Observability Audit Platform Orchestrator"
     )
     parser.add_argument(
-        "--director-only", action="store_true",
-        help="Start Director only",
+        "--mode", choices=["per-session", "cross-session"],
+        default="per-session",
+        help="Audit mode: per-session (trace/safety/policy/hallucination) "
+             "or cross-session (drift/cost). Default: per-session",
     )
     parser.add_argument(
-        "--auditors-only", action="store_true",
-        help="Start auditors only",
+        "--projects", type=str, default=None,
+        help="Comma-separated project names to audit (overrides projects.json filter)",
     )
     args = parser.parse_args()
 
-    orchestrator = Orchestrator()
+    project_names = [p.strip() for p in args.projects.split(",")] if args.projects else None
+    orchestrator = Orchestrator(mode=args.mode, project_names=project_names)
 
     def handle_signal(sig, frame):
         logger.info("Received signal %s.", sig)
@@ -634,10 +695,7 @@ def main():
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
 
-    orchestrator.start(
-        director_only=args.director_only,
-        auditors_only=args.auditors_only,
-    )
+    orchestrator.start()
 
 
 if __name__ == "__main__":
