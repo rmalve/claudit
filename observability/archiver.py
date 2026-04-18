@@ -267,26 +267,23 @@ class StreamArchiver:
         )
         self._client._redis.xadd("audit:escalations", envelope.to_stream_dict())
 
-        # Also persist to SQLite directly so the escalation is immediately
-        # queryable (doesn't have to wait for the next cycle's archive).
-        now_iso = datetime.now(timezone.utc).isoformat()
-        self._store.archive_escalation(
-            stream_id="",  # no stream_id yet, it's been xadd'd this cycle
-            timestamp=now_iso,
-            payload={
-                "escalation_id": escalation_id,
-                "escalation_type": "VERIFICATION_STUCK",
-                "severity": "high",
-                "subject_agent": directive["target_agent"],
-                "project": directive["project"],
-                "directive_id": directive["directive_id"],
-                "summary": summary,
-                "recommended_action": payload.recommended_action,
-                "resolution_status": "OPEN",
-                "metrics": payload.metrics,
-            },
+        # Also persist to SQLite with initial thread message (HARDEN-003:
+        # symmetric with Director-authored escalations so downstream queries
+        # never see a threadless escalation).
+        self._store.create_escalation_with_thread(
+            escalation_id=escalation_id,
+            escalation_type="VERIFICATION_STUCK",
+            severity="high",
+            project=directive["project"],
+            summary=summary,
+            subject_agent=directive["target_agent"],
+            directive_id=directive["directive_id"],
+            recommended_action=payload.recommended_action,
+            impact_assessment=payload.impact_assessment,
+            metrics=payload.metrics,
+            resolution_status="OPEN",
+            initial_message_author="director",
         )
-        self._store.commit()
         return escalation_id
 
     def _check_deadlines(self, audit_cycle_id: str) -> int:
