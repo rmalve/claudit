@@ -23,6 +23,7 @@ Usage:
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -31,15 +32,43 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 SOURCE_DIR = REPO_ROOT / "client" / "observability"
 PROJECTS_FILE = REPO_ROOT / "config" / "projects.json"
-VERSION_FILE_NAME = ".observability-version"
 EXCLUDE_DIRS = {"__pycache__", ".pytest_cache"}
 EXCLUDE_SUFFIXES = {".pyc", ".pyo"}
+SYNC_TMP_SUFFIX = ".sync-tmp"
+
+
+def _load_version_marker_name() -> str:
+    """Parse _VERSION_MARKER_FILENAME out of client/observability/__init__.py.
+
+    Keeps the client module as the single source of truth for the marker name;
+    the platform script reads it via text-parse (same trick _load_version uses)
+    to avoid cross-package imports (the client package has `from observability.*`
+    imports that fail outside a synced project's sys.path).
+    """
+    init = SOURCE_DIR / "__init__.py"
+    text = init.read_text(encoding="utf-8")
+    for line in text.splitlines():
+        if line.lstrip().startswith("_VERSION_MARKER_FILENAME"):
+            _, _, rhs = line.partition("=")
+            return rhs.strip().strip("\"'")
+    return ".observability-version"  # fallback matches historical default
+
+
+VERSION_FILE_NAME = _load_version_marker_name()
 
 
 def _iter_source_files(source: Path):
     """Yield (relative_path, absolute_path) for every file under source,
-    skipping pycache and compiled artifacts."""
+    skipping pycache, compiled artifacts, and symlinks.
+
+    Symlinks are skipped with a stderr warning: a symlink synced to another
+    machine would dangle, and we'd rather distribute a consistent file tree.
+    """
     for path in sorted(source.rglob("*")):
+        if path.is_symlink():
+            print(f"  WARN: skipping symlink {path.relative_to(source)} "
+                  f"(symlinks are not distributed)", file=sys.stderr)
+            continue
         if path.is_dir():
             continue
         if any(part in EXCLUDE_DIRS for part in path.parts):
@@ -122,27 +151,93 @@ def _print_diff(project_name: str, target_obs: Path,
     return True
 
 
+def _atomic_write(src_path: Path, dst_path: Path) -> None:
+    """Copy src_path to dst_path via a sibling .sync-tmp file + os.replace.
+
+    Per-file atomic: os.replace is atomic on both POSIX and Windows when the
+    source and destination are on the same filesystem (which sibling paths
+    always are). If anything raises mid-copy, the existing destination file
+    is untouched and we clean up the .sync-tmp artifact before re-raising.
+
+    Note: this does NOT give cross-file atomicity — a sync that updates
+    __init__.py and client.py will produce two separate atomic operations,
+    and a process that imports both in between will see a mixed state.
+    See the docstring on _apply_sync for the practical mitigation.
+    """
+    tmp_path = dst_path.with_name(dst_path.name + SYNC_TMP_SUFFIX)
+    try:
+        shutil.copy2(src_path, tmp_path)
+        os.replace(tmp_path, dst_path)
+    except BaseException:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+        raise
+
+
 def _apply_sync(source: Path, target_obs: Path, version: str,
                 added, changed) -> None:
+    """Write files to the target using per-file atomic replacement.
+
+    Each source file lands via a sibling ``.sync-tmp`` + ``os.replace``, so a
+    running hook will see either the old contents or the new contents of any
+    single file — never a half-written mix. Cross-file consistency during a
+    live Claude Code session is not guaranteed; see the README warning on
+    running ``sync_client.py --apply`` with active sessions.
+
+    The version marker is written via the same atomic pattern, so an
+    interrupted sync never leaves a half-written ``.observability-version``.
+    """
     target_obs.mkdir(parents=True, exist_ok=True)
     for rel in added + changed:
         src = source / rel
         dst = target_obs / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dst)
+        _atomic_write(src, dst)
 
     version_path = target_obs.parent / VERSION_FILE_NAME
-    version_path.write_text(version + "\n", encoding="utf-8")
+    version_tmp = version_path.with_name(version_path.name + SYNC_TMP_SUFFIX)
+    try:
+        version_tmp.write_text(version + "\n", encoding="utf-8")
+        os.replace(version_tmp, version_path)
+    except BaseException:
+        if version_tmp.exists():
+            try:
+                version_tmp.unlink()
+            except OSError:
+                pass
+        raise
 
 
 def _load_projects(only: str | None) -> list[dict]:
-    """Load projects.json and filter by name."""
+    """Load projects.json and filter by name.
+
+    Exits 2 with a clear error if the file is missing, unparseable, or has
+    an entry missing either 'name' or 'root' — both are required for sync
+    to know what to copy and where to put it.
+    """
     if not PROJECTS_FILE.exists():
         print(f"ERROR: {PROJECTS_FILE} not found.", file=sys.stderr)
         sys.exit(2)
 
-    data = json.loads(PROJECTS_FILE.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(PROJECTS_FILE.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        print(f"ERROR: {PROJECTS_FILE} is not valid JSON: {e}",
+              file=sys.stderr)
+        sys.exit(2)
+
     projects = data.get("projects", [])
+
+    for entry in projects:
+        if not isinstance(entry, dict) or "name" not in entry or "root" not in entry:
+            print(f"ERROR: project entry missing required key 'name' or 'root': {entry}",
+                  file=sys.stderr)
+            print(f"       Check {PROJECTS_FILE} — every project needs both fields.",
+                  file=sys.stderr)
+            sys.exit(2)
 
     if only is not None:
         projects = [p for p in projects if p["name"] == only]

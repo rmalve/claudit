@@ -60,6 +60,8 @@ The script preserves any project-specific files in `observability/` (standing di
 
 **Re-run `sync_client.py` whenever the platform publishes updates.** The hooks log a WARNING if the installed package version disagrees with the marker, but there is no automatic sync — you control when updates land.
 
+> ⚠️ **Don't run `sync_client.py --apply` while a Claude Code session is active in the target project.** Individual files are replaced atomically, but cross-file consistency during a running session isn't guaranteed — a hook that imports `observability.*` mid-sync may see a mix of old and new modules. Stop the session, sync, then resume.
+
 (Legacy: the raw `cp -r llm-observability/client/observability /path/to/my-project/observability` still works for one-shot setup.)
 
 Resulting structure:
