@@ -815,36 +815,26 @@ async def create_escalation(args):
         escalation_id = f"ESC-{uuid.uuid4().hex[:12]}"
         now = datetime.now(timezone.utc).isoformat()
 
-        # 1. Write to SQLite
+        # 1. Write escalation + initial thread message atomically (HARDEN-003).
         store = _get_audit_store()
-        store.archive_escalation(
-            stream_id="",
-            timestamp=now,
-            payload={
-                "escalation_id": escalation_id,
-                "escalation_type": escalation_type,
-                "severity": severity,
-                "project": project,
-                "subject_agent": subject_agent or "",
-                "directive_id": directive_id or "",
-                "finding_ids": finding_ids,
-                "summary": summary,
-                "recommended_action": recommended_action,
-                "impact_assessment": impact_assessment,
-                "metrics": metrics,
-                "resolution_status": "AWAITING_USER",
-            },
-        )
-
-        # 2. Add Director's initial context as first thread message
-        store.insert_escalation_message(
+        store.create_escalation_with_thread(
             escalation_id=escalation_id,
-            author="director",
-            content=summary,
+            escalation_type=escalation_type,
+            severity=severity,
+            project=project,
+            summary=summary,
+            subject_agent=subject_agent or "",
+            directive_id=directive_id or "",
+            finding_ids=finding_ids,
+            recommended_action=recommended_action,
+            impact_assessment=impact_assessment,
+            metrics=metrics,
+            resolution_status="AWAITING_USER",
+            timestamp=now,
+            initial_message_author="director",
         )
-        store.commit()
 
-        # 3. Publish to Redis for real-time visibility
+        # 2. Publish to Redis for real-time visibility
         client = _get_stream_client("director")
         esc_payload = EscalationPayload(
             escalation_id=escalation_id,
