@@ -42,13 +42,27 @@ And two things in the **external project**:
 docker restart llm-obs-redis
 ```
 
-### Step 3: Copy the observability package (external project)
+### Step 3: Sync the observability package (external project)
 
-Copy `client/observability/` into the external project root:
+The external project keeps its own copy of `observability/` for portability — hooks in `.claude/settings.json` use relative paths (`observability/hooks/foo.py`) so the same configuration works on any machine, including remote hosts that do not share a filesystem with the audit platform.
+
+From the audit platform, sync the package into the registered project:
 
 ```bash
-cp -r llm-observability/client/observability /path/to/my-project/observability
+# Preview what will change:
+python scripts/sync_client.py --project my-project
+
+# Apply:
+python scripts/sync_client.py --project my-project --apply
 ```
+
+The script preserves any project-specific files in `observability/` (standing directives, version archives, custom hooks) and writes a `.observability-version` marker at the project root so future syncs can detect drift.
+
+**Re-run `sync_client.py` whenever the platform publishes updates.** The hooks log a WARNING if the installed package version disagrees with the marker, but there is no automatic sync — you control when updates land.
+
+> ⚠️ **Don't run `sync_client.py --apply` while a Claude Code session is active in the target project.** Individual files are replaced atomically, but cross-file consistency during a running session isn't guaranteed — a hook that imports `observability.*` mid-sync may see a mix of old and new modules. Stop the session, sync, then resume.
+
+(Legacy: the raw `cp -r llm-observability/client/observability /path/to/my-project/observability` still works for one-shot setup.)
 
 Resulting structure:
 
@@ -119,6 +133,20 @@ REDIS_PASSWORD="the-generated-password"
 ```
 
 The hooks load `.env` automatically via `python-dotenv`.
+
+#### Connecting to a remote audit platform
+
+If the external project runs on a different machine from the audit platform's QDrant + Redis instances, point `QDRANT_URL` and `REDIS_URL` at the platform's reachable network address instead of `localhost`:
+
+```bash
+QDRANT_URL="http://audit-platform.internal:6333"
+REDIS_URL="redis://audit-platform.internal:6379"
+```
+
+- **Firewall / NAT**: Open outbound access from the remote project host to the platform's QDrant (default port 6333) and Redis (default port 6379).
+- **ACL credentials are per-project**: `REDIS_USERNAME="project-my-project"` can only read/write that project's streams. Sharing a single audit platform across multiple remote projects is safe — each project is scoped to its own keyspace by Redis ACL.
+- **Time sync**: Cross-machine telemetry relies on each host having an accurate clock. If the project host drifts, session ordering on the dashboard will too. Install `chrony` or equivalent.
+- **Python**: The client hooks require Python 3.11+ (union type hints). Confirm `python --version` on the remote machine before onboarding.
 
 ### Step 6: Configure hooks (external project)
 
