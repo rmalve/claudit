@@ -359,7 +359,7 @@ export default function Overview() {
 
           <Paper sx={{ p: 2 }}>
             <Typography variant="subtitle2" color="text.disabled" gutterBottom>
-              FINDING RATE BY AUDITOR (per 100 tool calls; excludes info severity/type)
+              FINDING RATE BY AUDITOR (per 100 tool calls; excludes info severity)
             </Typography>
             {lineData.length > 0 ? (
               <ResponsiveContainer width="100%" height={280}>

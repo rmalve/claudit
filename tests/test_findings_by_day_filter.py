@@ -43,8 +43,15 @@ class TestRateChartIncludes:
     def test_excludes_info_severity(self):
         assert _rate_chart_includes(_finding(severity="info")) is False
 
-    def test_excludes_info_finding_type(self):
-        assert _rate_chart_includes(_finding(finding_type="info")) is False
+    def test_includes_info_finding_type_with_nonzero_severity(self):
+        """Director synthesis findings use finding_type=info but may have
+        medium/high severity. The severity-only filter keeps them."""
+        assert _rate_chart_includes(
+            _finding(finding_type="info", severity="medium"),
+        ) is True
+        assert _rate_chart_includes(
+            _finding(finding_type="info", severity="high"),
+        ) is True
 
     def test_excludes_when_both_axes_are_info(self):
         assert _rate_chart_includes(

@@ -330,14 +330,16 @@ def _rate_chart_includes(finding: dict) -> bool:
     Excludes:
     - Cross-session findings (no per-session denominator). Detected by
       a missing / non-UUID target_session.
-    - Informational noise on either axis — finding_type == "info" OR
-      severity == "info". Auditors use the word in both places, so both
-      are filtered symmetrically.
+    - Findings with severity == "info" — the noise category. finding_type
+      is NOT used for exclusion: Director synthesis findings carry
+      finding_type="info" by convention (they're not rule violations) but
+      frequently have medium/high severity and are the highest-signal
+      summaries in a cycle. Severity is the authoritative noise signal.
     """
     target = finding.get("target_session") or ""
     if not target or len(target) < 32 or "-" not in target:
         return False
-    if finding.get("finding_type") == "info" or finding.get("severity") == "info":
+    if finding.get("severity") == "info":
         return False
     return True
 
