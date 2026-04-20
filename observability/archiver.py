@@ -46,6 +46,13 @@ ARCHIVE_MAP = {
     "audit:reports": "archive_report",
 }
 
+# HARDEN-002: age-trim compliance streams older than this many completed
+# audit cycles. Gap 1b keeps compliance events around so the Director's
+# next assign-phase read can see them; without a floor, streams grow
+# unbounded. Anything older than 50 cycles has been read by the Director
+# long ago and the associated directive is either verified or escalated.
+COMPLIANCE_TRIM_AGE_CYCLES = 50
+
 
 class StreamArchiver:
     """Archives Redis stream data to SQLite, then trims streams.
@@ -105,6 +112,12 @@ class StreamArchiver:
         if audit_cycle_id:
             stale_actions = self._check_stale_verifications(audit_cycle_id)
             results["_stale_verification_checks"] = stale_actions
+
+        # HARDEN-002: age-trim old compliance:* stream entries (bounded by
+        # XPENDING on the Director group to preserve Gap 1b correctness).
+        if include_project_streams:
+            trim_stats = self._trim_old_compliance_events()
+            results["_compliance_trim"] = trim_stats
 
         logger.info("Archive complete for cycle %s: %s", audit_cycle_id, results)
         return results
@@ -428,6 +441,124 @@ class StreamArchiver:
             logger.error("Failed to read stream %s: %s", stream, e)
 
         return messages
+
+    @staticmethod
+    def _stream_id_sortkey(stream_id) -> tuple[int, int]:
+        """Parse a Redis stream ID ('ms-seq') into a comparable (ms, seq) tuple.
+
+        Accepts bytes or str. Returns (0, 0) for None so it sorts earliest
+        (safe default when a missing ID means "no bound").
+        """
+        if stream_id is None:
+            return (0, 0)
+        if isinstance(stream_id, bytes):
+            stream_id = stream_id.decode("ascii", errors="ignore")
+        parts = stream_id.split("-", 1)
+        try:
+            ms = int(parts[0])
+            seq = int(parts[1]) if len(parts) > 1 else 0
+        except ValueError:
+            return (0, 0)
+        return (ms, seq)
+
+    def _compute_compliance_trim_cutoff(self) -> str | None:
+        """Return a Redis stream ID ('ms-0') representing the timestamp of
+        the Nth most recent completed audit cycle, or None if there are
+        fewer than N cycles recorded yet.
+
+        Older compliance events than this cutoff are candidates for trimming.
+        """
+        row = self._store._conn.execute(
+            """
+            SELECT MIN(cycle_start) AS oldest
+              FROM (
+                SELECT audit_cycle_id, MIN(archived_at) AS cycle_start
+                  FROM archive_log
+                 WHERE audit_cycle_id IS NOT NULL
+                 GROUP BY audit_cycle_id
+                 ORDER BY cycle_start DESC
+                 LIMIT ?
+              )
+            """,
+            (COMPLIANCE_TRIM_AGE_CYCLES,),
+        ).fetchone()
+        if not row or not row["oldest"]:
+            return None
+        # Count how many distinct cycles we have; if <= threshold, nothing
+        # is past the cutoff yet.
+        total = self._store._conn.execute(
+            "SELECT COUNT(DISTINCT audit_cycle_id) AS n FROM archive_log"
+            " WHERE audit_cycle_id IS NOT NULL"
+        ).fetchone()
+        if total and total["n"] <= COMPLIANCE_TRIM_AGE_CYCLES:
+            return None
+        cutoff_dt = datetime.fromisoformat(row["oldest"])
+        cutoff_ms = int(cutoff_dt.timestamp() * 1000)
+        return f"{cutoff_ms}-0"
+
+    def _trim_old_compliance_events(self) -> dict:
+        """Age-trim compliance:* streams, bounded by XPENDING on group:director.
+
+        HARDEN-002. Gap 1b keeps compliance events in Redis so the Director's
+        next assign-phase read can see mid-cycle arrivals; the trade-off is
+        unbounded stream growth. This method trims entries older than
+        COMPLIANCE_TRIM_AGE_CYCLES completed cycles, but never trims past the
+        oldest unread stream ID for the Director's consumer group — that
+        would recreate the exact bug Gap 1b fixed.
+
+        Returns a summary dict with counts.
+        """
+        cutoff_id = self._compute_compliance_trim_cutoff()
+        result = {"trimmed": 0, "streams": 0, "bounded_by_pending": 0}
+        if cutoff_id is None:
+            return result
+
+        group = "group:director"
+        for project in self._load_projects():
+            stream = f"compliance:{project}"
+            try:
+                earliest_pending = None
+                try:
+                    pending = self._client._redis.xpending(stream, group)
+                    if isinstance(pending, dict):
+                        earliest_pending = pending.get("min")
+                    elif isinstance(pending, (tuple, list)) and len(pending) >= 2:
+                        earliest_pending = pending[1]
+                except Exception:
+                    # Group may not exist yet; that means nothing pending.
+                    earliest_pending = None
+
+                final_id = cutoff_id
+                if earliest_pending:
+                    if self._stream_id_sortkey(earliest_pending) < self._stream_id_sortkey(cutoff_id):
+                        final_id = earliest_pending if isinstance(earliest_pending, str) \
+                            else earliest_pending.decode("ascii", errors="ignore")
+                        result["bounded_by_pending"] += 1
+
+                before = self._client._redis.xlen(stream)
+                if before == 0:
+                    continue
+                self._client._redis.xtrim(stream, minid=final_id)
+                after = self._client._redis.xlen(stream)
+                trimmed = before - after
+                if trimmed > 0:
+                    result["streams"] += 1
+                    result["trimmed"] += trimmed
+                    logger.info(
+                        "compliance:%s: trimmed %d events (cutoff=%s, bounded_by_pending=%s)",
+                        project, trimmed, final_id, final_id != cutoff_id,
+                    )
+            except Exception as e:
+                logger.warning("compliance:%s trim failed (non-fatal): %s", project, e)
+
+        if result["trimmed"]:
+            logger.info(
+                "Compliance trim summary: %d events across %d streams "
+                "(age cutoff = %d cycles; %d streams bounded by pending)",
+                result["trimmed"], result["streams"],
+                COMPLIANCE_TRIM_AGE_CYCLES, result["bounded_by_pending"],
+            )
+        return result
 
     def _load_projects(self) -> list[str]:
         config_path = Path(__file__).resolve().parent.parent / "config" / "projects.json"
