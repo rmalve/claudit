@@ -7,7 +7,7 @@ AuditStore. Uses a temp SQLite DB per test — no Redis, no QDrant.
 import json
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -1248,3 +1248,145 @@ class TestQueryCyclesToVerification:
         result = store.query_cycles_to_verification(project="rpi", last_n_cycles=20)
         directive_ids = {r["directive_id"] for r in result}
         assert directive_ids == {"D1"}
+
+
+# ---------------------------------------------------------------------------
+# HARDEN-002: compliance stream age-trim
+# ---------------------------------------------------------------------------
+
+
+def _seed_archive_log_dated(store, cycle_id: str, archived_at: str,
+                             stream: str = "audit:findings") -> None:
+    """Seed a single archive_log row with an explicit timestamp."""
+    store._conn.execute(
+        "INSERT INTO archive_log (stream, messages_archived, archived_at, audit_cycle_id)"
+        " VALUES (?, ?, ?, ?)",
+        (stream, 0, archived_at, cycle_id),
+    )
+    store._conn.commit()
+
+
+class TestComplianceAgeTrim:
+    """HARDEN-002: _trim_old_compliance_events trims old entries bounded by
+    the Director group's XPENDING min so unread messages aren't destroyed."""
+
+    def _make_archiver(self, store, projects=("rpi",)):
+        from unittest.mock import MagicMock
+        from observability.archiver import StreamArchiver
+        archiver = StreamArchiver(store=store, client=MagicMock())
+        archiver._load_projects = lambda: list(projects)
+        return archiver
+
+    def test_noop_when_fewer_than_threshold_cycles(self, store):
+        """With only a handful of cycles, cutoff is None and no trim happens."""
+        from observability.archiver import COMPLIANCE_TRIM_AGE_CYCLES
+        now = datetime.now(timezone.utc)
+        for i in range(5):
+            _seed_archive_log_dated(
+                store, f"cycle-{i:03d}", (now - timedelta(hours=i)).isoformat(),
+            )
+
+        archiver = self._make_archiver(store)
+        result = archiver._trim_old_compliance_events()
+
+        assert result == {"trimmed": 0, "streams": 0, "bounded_by_pending": 0}
+        archiver._client._redis.xtrim.assert_not_called()
+        assert COMPLIANCE_TRIM_AGE_CYCLES > 5
+
+    def test_trims_when_above_threshold(self, store):
+        """With enough cycles, cutoff resolves to an old stream id and xtrim runs."""
+        from observability.archiver import COMPLIANCE_TRIM_AGE_CYCLES
+        base = datetime.now(timezone.utc)
+        # Seed threshold + 10 cycles, each one hour apart, newest first.
+        for i in range(COMPLIANCE_TRIM_AGE_CYCLES + 10):
+            _seed_archive_log_dated(
+                store, f"cycle-{i:04d}", (base - timedelta(hours=i)).isoformat(),
+            )
+
+        archiver = self._make_archiver(store)
+        archiver._client._redis.xpending.return_value = {
+            "pending": 0, "min": None, "max": None, "consumers": [],
+        }
+        # Simulate 7 events before trim, 4 after.
+        archiver._client._redis.xlen.side_effect = [7, 4]
+
+        result = archiver._trim_old_compliance_events()
+
+        assert result["trimmed"] == 3
+        assert result["streams"] == 1
+        assert result["bounded_by_pending"] == 0
+        archiver._client._redis.xtrim.assert_called_once()
+        call = archiver._client._redis.xtrim.call_args
+        assert call[0][0] == "compliance:rpi"
+        assert "minid" in call[1]
+
+    def test_trim_bounded_by_xpending_min(self, store):
+        """If xpending.min is older than the age cutoff, trim uses xpending.min
+        so unread messages stay put (preserves Gap 1b)."""
+        from observability.archiver import COMPLIANCE_TRIM_AGE_CYCLES
+        base = datetime.now(timezone.utc)
+        for i in range(COMPLIANCE_TRIM_AGE_CYCLES + 10):
+            _seed_archive_log_dated(
+                store, f"cycle-{i:04d}", (base - timedelta(hours=i)).isoformat(),
+            )
+
+        archiver = self._make_archiver(store)
+        # xpending.min points way before the age cutoff — trim must honor it.
+        archiver._client._redis.xpending.return_value = {
+            "pending": 3, "min": "1-0", "max": "999999999999-0", "consumers": [],
+        }
+        archiver._client._redis.xlen.side_effect = [5, 5]  # nothing trimmed
+
+        result = archiver._trim_old_compliance_events()
+
+        assert result["bounded_by_pending"] == 1
+        call = archiver._client._redis.xtrim.call_args
+        assert call[1]["minid"] == "1-0"
+
+    def test_skips_empty_stream(self, store):
+        """Streams with no entries don't call xtrim at all."""
+        from observability.archiver import COMPLIANCE_TRIM_AGE_CYCLES
+        base = datetime.now(timezone.utc)
+        for i in range(COMPLIANCE_TRIM_AGE_CYCLES + 10):
+            _seed_archive_log_dated(
+                store, f"cycle-{i:04d}", (base - timedelta(hours=i)).isoformat(),
+            )
+
+        archiver = self._make_archiver(store)
+        archiver._client._redis.xpending.return_value = {"pending": 0, "min": None, "max": None, "consumers": []}
+        archiver._client._redis.xlen.return_value = 0
+
+        result = archiver._trim_old_compliance_events()
+
+        assert result["trimmed"] == 0
+        archiver._client._redis.xtrim.assert_not_called()
+
+    def test_xtrim_exception_does_not_abort_cycle(self, store):
+        """A Redis hiccup on one project must not prevent others from trimming."""
+        from observability.archiver import COMPLIANCE_TRIM_AGE_CYCLES
+        base = datetime.now(timezone.utc)
+        for i in range(COMPLIANCE_TRIM_AGE_CYCLES + 10):
+            _seed_archive_log_dated(
+                store, f"cycle-{i:04d}", (base - timedelta(hours=i)).isoformat(),
+            )
+
+        archiver = self._make_archiver(store, projects=("rpi", "other"))
+        archiver._client._redis.xpending.return_value = {"pending": 0, "min": None, "max": None, "consumers": []}
+        # rpi: xlen=5 pre-trim (trim raises, no post-call); other: xlen 8 → 5.
+        archiver._client._redis.xlen.side_effect = [5, 8, 5]
+        archiver._client._redis.xtrim.side_effect = [Exception("boom"), None]
+
+        result = archiver._trim_old_compliance_events()
+
+        # First raised, second trimmed 3. Loop must have continued.
+        assert archiver._client._redis.xtrim.call_count == 2
+        assert result["streams"] == 1
+        assert result["trimmed"] == 3
+
+    def test_stream_id_sortkey_handles_malformed(self, store):
+        from observability.archiver import StreamArchiver
+        assert StreamArchiver._stream_id_sortkey(None) == (0, 0)
+        assert StreamArchiver._stream_id_sortkey("1234-5") == (1234, 5)
+        assert StreamArchiver._stream_id_sortkey(b"9999-0") == (9999, 0)
+        assert StreamArchiver._stream_id_sortkey("bogus") == (0, 0)
+
