@@ -118,35 +118,48 @@ AGENT_NAME="main"
 """
 
 
-def build_hook_config(observability_path: str) -> str:
-    """Build the Claude Code hooks configuration."""
-    hooks_path = Path(observability_path) / "observability" / "hooks"
+def _hook_command(hook_name: str, observability_path: str, use_absolute: bool) -> str:
+    """Build a single hook invocation string.
 
+    Relative (default): hooks resolve against the project's own observability/ copy.
+    Portable across machines; requires sync_client.py to distribute the package.
+
+    Absolute (legacy): hooks resolve against the platform repo. Only works when
+    the external project lives on the same filesystem as the platform.
+    """
+    if use_absolute:
+        hooks_path = Path(observability_path) / "observability" / "hooks"
+        return f"python \"{hooks_path / hook_name}\""
+    return f"python \"observability/hooks/{hook_name}\""
+
+
+def build_hook_config(observability_path: str, use_absolute: bool = False) -> str:
+    """Build the Claude Code hooks configuration."""
     config = {
         "hooks": {
             "PostToolUse": [
                 {
-                    "command": f"python \"{hooks_path / 'post_tool_use.py'}\"",
+                    "command": _hook_command("post_tool_use.py", observability_path, use_absolute),
                     "description": "Audit telemetry: captures tool calls, agent spawns, code changes to QDrant"
                 },
                 {
-                    "command": f"python \"{hooks_path / 'test_runner.py'}\"",
+                    "command": _hook_command("test_runner.py", observability_path, use_absolute),
                     "description": "Eval telemetry: runs tests and lint after .py file changes"
                 }
             ],
             "Stop": [
                 {
-                    "command": f"python \"{hooks_path / 'session_end.py'}\"",
+                    "command": _hook_command("session_end.py", observability_path, use_absolute),
                     "description": "Audit telemetry: aggregates session summary and flushes metrics"
                 }
             ],
             "PreToolUse": [
                 {
-                    "command": f"python \"{hooks_path / 'version_archive.py'}\"",
+                    "command": _hook_command("version_archive.py", observability_path, use_absolute),
                     "description": "Agent versioning: snapshots changed agent definitions before telemetry starts"
                 },
                 {
-                    "command": f"python \"{hooks_path / 'directive_intake.py'}\"",
+                    "command": _hook_command("directive_intake.py", observability_path, use_absolute),
                     "description": "Audit directives: reads pending directives from the Audit Director"
                 }
             ]
@@ -156,9 +169,13 @@ def build_hook_config(observability_path: str) -> str:
     return json.dumps(config, indent=2)
 
 
-def build_hook_config_merge_snippet(observability_path: str) -> str:
+def build_hook_config_merge_snippet(observability_path: str, use_absolute: bool = False) -> str:
     """Build a snippet showing how to merge hooks into existing settings."""
-    hooks_path = Path(observability_path) / "observability" / "hooks"
+    post = _hook_command("post_tool_use.py", observability_path, use_absolute)
+    test = _hook_command("test_runner.py", observability_path, use_absolute)
+    stop = _hook_command("session_end.py", observability_path, use_absolute)
+    version = _hook_command("version_archive.py", observability_path, use_absolute)
+    intake = _hook_command("directive_intake.py", observability_path, use_absolute)
 
     return f"""
 If your project already has a .claude/settings.json, merge these hooks
@@ -166,27 +183,27 @@ into the existing "hooks" object:
 
   "PostToolUse": [
     {{
-      "command": "python \\"{hooks_path / 'post_tool_use.py'}\\"",
+      "command": {json.dumps(post)},
       "description": "Audit telemetry: captures tool calls, agent spawns, code changes"
     }},
     {{
-      "command": "python \\"{hooks_path / 'test_runner.py'}\\"",
+      "command": {json.dumps(test)},
       "description": "Eval telemetry: runs tests and lint after .py file changes"
     }}
   ],
   "Stop": [
     {{
-      "command": "python \\"{hooks_path / 'session_end.py'}\\"",
+      "command": {json.dumps(stop)},
       "description": "Audit telemetry: aggregates session summary"
     }}
   ],
   "PreToolUse": [
     {{
-      "command": "python \\"{hooks_path / 'version_archive.py'}\\"",
+      "command": {json.dumps(version)},
       "description": "Agent versioning: snapshots changed agent definitions"
     }},
     {{
-      "command": "python \\"{hooks_path / 'directive_intake.py'}\\"",
+      "command": {json.dumps(intake)},
       "description": "Audit directives: reads pending directives from the Audit Director"
     }}
   ]
@@ -237,6 +254,14 @@ def main():
         "--observability-path", default=str(REPO_ROOT),
         help="Path to the llm-observability repo (default: this repo)"
     )
+    parser.add_argument(
+        "--absolute-paths", action="store_true",
+        help=(
+            "Emit hook invocations using absolute paths into the platform repo. "
+            "Legacy behavior — only works when the external project shares a "
+            "filesystem with the platform. Default is relative paths (portable)."
+        )
+    )
     args = parser.parse_args()
 
     project = args.project.lower().strip()
@@ -259,8 +284,8 @@ def main():
     acl_entry = build_acl_entry(project, password)
     adapter_code = build_adapter(project, str(project_root))
     env_reference = build_env_reference(project, password, str(project_root))
-    hook_config = build_hook_config(str(observability_path))
-    merge_snippet = build_hook_config_merge_snippet(str(observability_path))
+    hook_config = build_hook_config(str(observability_path), use_absolute=args.absolute_paths)
+    merge_snippet = build_hook_config_merge_snippet(str(observability_path), use_absolute=args.absolute_paths)
     claude_md_verbiage = read_verbiage("claude-md-audit-authority.md")
     skill_verbiage = read_verbiage("skill-audit-interface.md")
 
@@ -277,7 +302,8 @@ def main():
     print(f"  Set these in the external project's environment.")
     print(f"  ⚠  Store the password securely — it won't be shown again.")
 
-    print_section("4. CLAUDE CODE HOOKS — Full settings.json", hook_config)
+    path_mode = "absolute (legacy — platform-bound)" if args.absolute_paths else "relative (portable — requires observability/ synced into project)"
+    print_section(f"4. CLAUDE CODE HOOKS — Full settings.json [mode: {path_mode}]", hook_config)
     print_section("4b. CLAUDE CODE HOOKS — Merge snippet", merge_snippet)
 
     print_section("5. CLAUDE.MD AUDIT AUTHORITY", claude_md_verbiage)
@@ -384,10 +410,13 @@ def main():
         print(f"\n  Done. Remember to:")
         print(f"    1. Run 'redis-cli ACL LOAD' or restart Redis")
         print(f"    2. Set the environment variables in the external project")
-        print(f"    3. Paste audit authority verbiage into CLAUDE.md")
-        print(f"    4. Paste audit interface verbiage into each agent skill")
-        print(f"    5. Start the orchestrator: python orchestrator.py --project {project}")
-        print(f"    6. After adding/changing agents, run: python scripts/version_archive.py --root \"{project_root}\"")
+        if not args.absolute_paths:
+            print(f"    3. Sync the observability/ package into the project:")
+            print(f"         python scripts/sync_client.py --project {project} --apply")
+        print(f"    4. Paste audit authority verbiage into CLAUDE.md")
+        print(f"    5. Paste audit interface verbiage into each agent skill")
+        print(f"    6. Start the orchestrator: python orchestrator.py --project {project}")
+        print(f"    7. After adding/changing agents, run: python scripts/version_archive.py --root \"{project_root}\"")
     else:
         print_section("DRY RUN COMPLETE",
             "No files were written. Run with --apply to write files.\n"
