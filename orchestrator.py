@@ -233,6 +233,12 @@ class Orchestrator:
             logger.info("Starting %s...", proc.name)
 
             env = {**os.environ, "AUDIT_CYCLE_ID": self.audit_cycle_id}
+            # HARDEN-001: set OBSERVABILITY_PROJECT so stream_publish can
+            # auto-inject the project field on any payload. Single-project
+            # today; multi-project Chief Director era will need task-payload
+            # based project context instead.
+            if self.projects:
+                env["OBSERVABILITY_PROJECT"] = self.projects[0].name
             # Pass agent identity so hooks and MCP tools resolve the correct agent
             if proc.role == "director":
                 env["AGENT_NAME"] = "director"
