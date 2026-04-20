@@ -12,7 +12,7 @@ Usage:
     store = AuditStore()
     store.archive_finding({...})     # single record
     store.archive_findings([...])    # batch from stream drain
-    findings = store.query_findings(project="my-project", severity="high")
+    findings = store.query_findings(project="rpi", severity="high")
 """
 
 import json
@@ -1337,6 +1337,61 @@ class AuditStore:
         """, (message_id, escalation_id, author, content, now))
         self._conn.commit()
         return message_id
+
+    def create_escalation_with_thread(
+        self,
+        escalation_id: str,
+        escalation_type: str,
+        severity: str,
+        project: str,
+        summary: str,
+        *,
+        subject_agent: str = "",
+        directive_id: str = "",
+        promotion_id: str = "",
+        finding_ids: list | None = None,
+        recommended_action: str = "",
+        impact_assessment: str = "",
+        metrics: dict | None = None,
+        resolution_status: str = "AWAITING_USER",
+        timestamp: str | None = None,
+        initial_message_author: str = "director",
+    ) -> str:
+        """Atomically insert an escalation AND seed its conversation thread
+        with an initial system-authored message.
+
+        HARDEN-003: Director-published escalations (via create_escalation MCP tool)
+        and archiver-published escalations (VERIFICATION_STUCK) must both leave the
+        same SQLite shape — escalations row + escalation_messages first entry — so
+        downstream queries don't need lazy-create fallbacks.
+        """
+        ts = timestamp or datetime.now(timezone.utc).isoformat()
+        self.archive_escalation(
+            stream_id="",
+            timestamp=ts,
+            payload={
+                "escalation_id": escalation_id,
+                "escalation_type": escalation_type,
+                "severity": severity,
+                "project": project,
+                "subject_agent": subject_agent,
+                "directive_id": directive_id,
+                "promotion_id": promotion_id,
+                "finding_ids": finding_ids or [],
+                "summary": summary,
+                "recommended_action": recommended_action,
+                "impact_assessment": impact_assessment,
+                "metrics": metrics or {},
+                "resolution_status": resolution_status,
+            },
+        )
+        self.insert_escalation_message(
+            escalation_id=escalation_id,
+            author=initial_message_author,
+            content=summary,
+        )
+        self.commit()
+        return escalation_id
 
     def get_escalation_messages(self, escalation_id: str) -> list[dict]:
         """Get all messages in an escalation thread, ordered chronologically."""

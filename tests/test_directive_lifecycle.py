@@ -1249,6 +1249,92 @@ class TestQueryCyclesToVerification:
         directive_ids = {r["directive_id"] for r in result}
         assert directive_ids == {"D1"}
 
+# ---------------------------------------------------------------------------
+# HARDEN-003: symmetric escalation-with-thread creation
+# ---------------------------------------------------------------------------
+
+
+class TestCreateEscalationWithThread:
+    """HARDEN-003: both the MCP tool create_escalation and archiver-published
+    VERIFICATION_STUCK escalations must leave matching SQLite shape — one
+    escalations row AND one initial escalation_messages entry."""
+
+    def test_writes_both_rows_atomically(self, store):
+        esc_id = "ESC-harden003a"
+        store.create_escalation_with_thread(
+            escalation_id=esc_id,
+            escalation_type="VERIFICATION_STUCK",
+            severity="high",
+            project="rpi",
+            summary="Stuck verification on D42",
+            subject_agent="architect",
+            directive_id="D42",
+            resolution_status="OPEN",
+            initial_message_author="director",
+        )
+
+        esc_row = store._conn.execute(
+            "SELECT * FROM escalations WHERE escalation_id = ?", (esc_id,),
+        ).fetchone()
+        assert esc_row is not None
+        assert esc_row["escalation_type"] == "VERIFICATION_STUCK"
+        assert esc_row["project"] == "rpi"
+
+        messages = store.get_escalation_messages(esc_id)
+        assert len(messages) == 1
+        assert messages[0]["author"] == "director"
+        assert messages[0]["content"] == "Stuck verification on D42"
+
+    def test_defaults_when_optional_fields_omitted(self, store):
+        esc_id = "ESC-harden003b"
+        store.create_escalation_with_thread(
+            escalation_id=esc_id,
+            escalation_type="POLICY_VIOLATION",
+            severity="medium",
+            project="rpi",
+            summary="Something happened",
+        )
+
+        esc_row = store._conn.execute(
+            "SELECT * FROM escalations WHERE escalation_id = ?", (esc_id,),
+        ).fetchone()
+        assert esc_row["resolution_status"] == "AWAITING_USER"
+        assert esc_row["subject_agent"] == ""
+
+        messages = store.get_escalation_messages(esc_id)
+        assert len(messages) == 1
+
+    def test_archiver_verification_escalation_creates_thread(self, store):
+        """The archiver's _publish_verification_escalation path must also
+        seed the thread (was the exact HARDEN-003 asymmetry)."""
+        from unittest.mock import MagicMock
+        from observability.archiver import StreamArchiver
+
+        archiver = StreamArchiver(store=store, client=MagicMock())
+        directive = {
+            "directive_id": "D-stuck",
+            "target_agent": "architect",
+            "project": "rpi",
+            "followups": [{"action": "retry", "cycle_id": "cycle-2"}],
+            "retry_count": 2,
+            "cycles_elapsed": 4,
+            "vp_cycle_id": "cycle-0",
+        }
+        escalation_id = archiver._publish_verification_escalation(
+            directive, audit_cycle_id="cycle-4",
+        )
+
+        # Archiver wrote to SQLite AND seeded the thread.
+        esc_row = store._conn.execute(
+            "SELECT * FROM escalations WHERE escalation_id = ?", (escalation_id,),
+        ).fetchone()
+        assert esc_row is not None
+        assert esc_row["escalation_type"] == "VERIFICATION_STUCK"
+
+        messages = store.get_escalation_messages(escalation_id)
+        assert len(messages) == 1
+        assert messages[0]["author"] == "director"
+        assert "stuck in VERIFICATION_PENDING" in messages[0]["content"]
 
 # ---------------------------------------------------------------------------
 # HARDEN-002: compliance stream age-trim
