@@ -323,6 +323,25 @@ def get_findings_by_cycle(
     return {"count": len(sorted_cycles), "cycles": sorted_cycles}
 
 
+def _rate_chart_includes(finding: dict) -> bool:
+    """Return True if this finding should contribute to the rate-by-auditor
+    chart served by /api/findings/by-day.
+
+    Excludes:
+    - Cross-session findings (no per-session denominator). Detected by
+      a missing / non-UUID target_session.
+    - Informational noise on either axis — finding_type == "info" OR
+      severity == "info". Auditors use the word in both places, so both
+      are filtered symmetrically.
+    """
+    target = finding.get("target_session") or ""
+    if not target or len(target) < 32 or "-" not in target:
+        return False
+    if finding.get("finding_type") == "info" or finding.get("severity") == "info":
+        return False
+    return True
+
+
 @app.get("/api/findings/by-day")
 def get_findings_by_day(
     project: str | None = Query(None),
@@ -367,13 +386,12 @@ def get_findings_by_day(
         return ""
 
     def _add_finding(finding: dict):
-        # Exclude cross-session findings — they have no per-session denominator.
-        # Cross-session findings have target_session as null or a non-UUID
-        # placeholder like "cross-session". Per-session findings always have a
-        # valid UUID session ID.
-        target = finding.get("target_session") or ""
-        if not target or len(target) < 32 or "-" not in target:
+        # Rate-chart inclusion predicate: excludes cross-session findings
+        # (no per-session denominator) and info-level noise on either the
+        # severity or finding_type axis.
+        if not _rate_chart_includes(finding):
             return
+        target = finding["target_session"]
         date_str = _finding_date(finding)
         if not date_str:
             return
