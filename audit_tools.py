@@ -83,6 +83,24 @@ def _inject_audit_cycle_id(payload) -> None:
         payload["audit_cycle_id"] = cycle_id
 
 
+def _inject_project_id(payload) -> None:
+    """Stamp OBSERVABILITY_PROJECT from env var on any dict payload that
+    doesn't already have a project. Mirror of _inject_audit_cycle_id —
+    auditor prompts no longer need to repeat the project field manually.
+
+    HARDEN-001: a missing `project` causes findings to disappear from
+    project-scoped dashboard views. This auto-injection makes the env var
+    authoritative and the prompt hint informational.
+    """
+    if not isinstance(payload, dict):
+        return
+    if payload.get("project"):
+        return
+    project = os.environ.get("OBSERVABILITY_PROJECT")
+    if project:
+        payload["project"] = project
+
+
 # ── Tool: qdrant_query ──
 
 @tool(
@@ -310,6 +328,7 @@ async def stream_publish(args):
     # tasks, and all other message types get the cycle marker needed by the
     # directive_lifecycle view and time-to-verification chart. Gap 1 Issue #2.
     _inject_audit_cycle_id(payload)
+    _inject_project_id(payload)
 
     try:
         # Use the auditor's own identity when available

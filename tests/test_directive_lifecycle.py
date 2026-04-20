@@ -473,6 +473,46 @@ class TestAuditCycleIdInjection:
         audit_tools._inject_audit_cycle_id(payload)
 
 
+class TestProjectIdInjection:
+    """HARDEN-001: stream_publish must auto-inject `project` from
+    OBSERVABILITY_PROJECT so auditor prompts don't need to repeat it."""
+
+    def test_inject_project_from_env_var(self, monkeypatch):
+        monkeypatch.setenv("OBSERVABILITY_PROJECT", "rpi")
+        import audit_tools
+        payload = {"finding_id": "F1"}
+        audit_tools._inject_project_id(payload)
+        assert payload["project"] == "rpi"
+
+    def test_inject_does_not_override_existing(self, monkeypatch):
+        monkeypatch.setenv("OBSERVABILITY_PROJECT", "rpi")
+        import audit_tools
+        payload = {"finding_id": "F1", "project": "other"}
+        audit_tools._inject_project_id(payload)
+        assert payload["project"] == "other"
+
+    def test_inject_no_op_when_env_var_missing(self, monkeypatch):
+        monkeypatch.delenv("OBSERVABILITY_PROJECT", raising=False)
+        import audit_tools
+        payload = {"finding_id": "F1"}
+        audit_tools._inject_project_id(payload)
+        assert "project" not in payload
+
+    def test_inject_no_op_when_existing_is_empty_string(self, monkeypatch):
+        """Empty string is falsy — treat as unset and inject."""
+        monkeypatch.setenv("OBSERVABILITY_PROJECT", "rpi")
+        import audit_tools
+        payload = {"finding_id": "F1", "project": ""}
+        audit_tools._inject_project_id(payload)
+        assert payload["project"] == "rpi"
+
+    def test_inject_handles_non_dict_payload(self, monkeypatch):
+        monkeypatch.setenv("OBSERVABILITY_PROJECT", "rpi")
+        import audit_tools
+        payload = "not a dict"
+        audit_tools._inject_project_id(payload)  # must not raise
+
+
 class TestArchiveFindingPersistsVerificationFields:
     def test_archive_finding_with_verification_payload(self, store):
         now = datetime.now(timezone.utc).isoformat()

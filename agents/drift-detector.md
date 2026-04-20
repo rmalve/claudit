@@ -118,7 +118,7 @@ For each finding, call `stream_publish` with:
   - `confidence`: 0.0-1.0
   - `target_agent`: which agent this is about
   - `target_session`: session_id
-  - `project`: the project name
+  - `project`: auto-injected by `stream_publish` from `OBSERVABILITY_PROJECT` — omit unless you are explicitly overriding the default project context
   - `claim`: plain-language statement of what's wrong
   - `evidence`: specific timestamps, tool names, sequences — not vague descriptions
   - `recommendation`: what you think should happen
