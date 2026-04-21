@@ -156,3 +156,37 @@ def resolve_all_versions_json() -> str | None:
     import json
     versions = get_cached_agent_versions()
     return json.dumps(versions) if versions else None
+
+
+def get_all_agent_version_paths() -> dict[str, str]:
+    """Return {agent_name: absolute_path} for every agent with an INDEX.json.
+
+    Parallel to get_all_agent_versions() — same iteration, but yields paths
+    instead of version labels. Empty dict if no archives found.
+    """
+    root = _get_project_root()
+    agents_dir = root / ".claude" / "agents"
+
+    if not agents_dir.exists():
+        return {}
+
+    paths: dict[str, str] = {}
+    for agent_file in agents_dir.glob("*.md"):
+        name = agent_file.stem
+        path = get_agent_version_path(name)
+        if path:
+            paths[name] = path
+    return paths
+
+
+def resolve_all_paths_json() -> str | None:
+    """Return a JSON-encoded map of all agent version paths.
+
+    Used as a fallback for main-session tool calls, where `main` has no
+    single versioned-agent file. The Drift Auditor correlates behavior
+    against definitions live at cycle time — the map gives it every
+    subagent path available when the tool call fired.
+    """
+    import json
+    paths = get_all_agent_version_paths()
+    return json.dumps(paths) if paths else None

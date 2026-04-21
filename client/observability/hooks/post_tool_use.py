@@ -36,6 +36,7 @@ from observability.client import ObservabilityClient
 from observability.version_resolver import (
     resolve_agent_name, resolve_version_for_agent,
     resolve_version_path_for_agent, resolve_all_versions_json,
+    resolve_all_paths_json,
 )
 from observability.validation import validate_event, DataQualityEvent
 from observability.hallucination_detector import HallucinationDetector
@@ -141,6 +142,10 @@ def main() -> None:
     if agent_version is None and agent_name == "main":
         # No "main" agent found — store full version map as fallback
         agent_version = resolve_all_versions_json()
+    if agent_version_path is None and agent_name == "main":
+        # Symmetric fallback — Drift Auditor needs paths to the subagent
+        # definitions that were live at cycle time; main has no single path.
+        agent_version_path = resolve_all_paths_json()
 
     # Build event
     event = ToolCallEvent(
