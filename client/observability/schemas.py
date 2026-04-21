@@ -221,7 +221,8 @@ class SessionSummary(BaseModel):
     project: str = ""
     start_time: datetime
     end_time: datetime = Field(default_factory=_utcnow)
-    duration_seconds: float = 0.0
+    duration_seconds: float = 0.0           # wall-clock span: first → last tool call
+    active_duration_seconds: float = 0.0    # sum of gaps under idle threshold
     # Tool usage
     total_tool_calls: int = 0
     tool_call_breakdown: dict[str, int] = Field(default_factory=dict)  # {tool_name: count}
@@ -243,6 +244,8 @@ class SessionSummary(BaseModel):
     claude_md_reads: int = 0
     jsonl_self_reads: int = 0
     context_saturation: bool = False
+    # Task classification — heuristic label from session_end classifier
+    task_type: str | None = None
     # Count provenance
     count_source: str = "qdrant_scroll"  # "qdrant_scroll" (exact) or "qdrant_search" (approximate)
     # Git state at session end
@@ -253,12 +256,14 @@ class SessionSummary(BaseModel):
             "session_id": self.session_id,
             "project": self.project,
             "duration_seconds": self.duration_seconds,
+            "active_duration_seconds": self.active_duration_seconds,
             "total_tool_calls": self.total_tool_calls,
             "tool_failures": self.tool_failures,
             "hallucinations_detected": self.hallucinations_detected,
             "claude_md_reads": self.claude_md_reads,
             "jsonl_self_reads": self.jsonl_self_reads,
             "context_saturation": self.context_saturation,
+            "task_type": self.task_type,
             "count_source": self.count_source,
             "latest_commit_sha": self.latest_commit_sha,
             "timestamp": self.end_time.isoformat(),
