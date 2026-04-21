@@ -46,6 +46,85 @@ def parse_stdin() -> dict | None:
     return None
 
 
+IDLE_THRESHOLD_SECONDS = int(os.environ.get("OBSERVABILITY_ACTIVE_IDLE_THRESHOLD", "300"))
+WRITING_TOOLS = {"Write", "Edit", "NotebookEdit", "MultiEdit"}
+
+
+def _normalize_path(p: str) -> str:
+    return p.replace("\\", "/") if p else ""
+
+
+def _is_under(path: str, root: str) -> bool:
+    """Return True if `path` is under `root` (case-insensitive on Windows)."""
+    if not path or not root:
+        return False
+    np = _normalize_path(path).lower()
+    nr = _normalize_path(root).lower().rstrip("/")
+    return np.startswith(nr + "/") or np == nr
+
+
+def _compute_active_duration(timestamps: list[str]) -> float:
+    """Sum gaps < IDLE_THRESHOLD_SECONDS between consecutive tool-call timestamps.
+
+    Treats any quiet period >= threshold as user idle time and excludes it.
+    Returns 0.0 if fewer than 2 timestamps parse successfully.
+    """
+    parsed: list[datetime] = []
+    for ts in timestamps:
+        if not ts:
+            continue
+        try:
+            parsed.append(datetime.fromisoformat(ts))
+        except (ValueError, TypeError):
+            continue
+    parsed.sort()
+    active = 0.0
+    for prev, curr in zip(parsed, parsed[1:]):
+        gap = (curr - prev).total_seconds()
+        if 0 <= gap < IDLE_THRESHOLD_SECONDS:
+            active += gap
+    return active
+
+
+def _classify_session(total_calls: int, write_paths: list[str]) -> str:
+    """Heuristic label for session intent.
+
+    Priority: ABORTED > IMPLEMENTATION > KNOWLEDGE_MANAGEMENT > PLANNING > UNCLASSIFIED.
+    Implementation wins over the others when a session touches multiple categories —
+    a coding session that edits a plan or vault note on the way through is still an
+    implementation session. UNCLASSIFIED catches reads-only / research sessions.
+    """
+    if total_calls == 0:
+        return "ABORTED"
+    project_root = os.environ.get("PROJECT_ROOT", "")
+    vault_roots = [
+        r.strip() for r in os.environ.get("OBSERVABILITY_VAULT_ROOTS", "").split(",")
+        if r.strip()
+    ]
+
+    # IMPLEMENTATION: write inside project root, excluding plans and vaults.
+    for p in write_paths:
+        if not project_root or not _is_under(p, project_root):
+            continue
+        if "/.claude/plans/" in _normalize_path(p).lower():
+            continue
+        if any(_is_under(p, v) for v in vault_roots):
+            continue
+        return "IMPLEMENTATION"
+
+    # KNOWLEDGE_MANAGEMENT: any write under a known vault root.
+    for p in write_paths:
+        if any(_is_under(p, v) for v in vault_roots):
+            return "KNOWLEDGE_MANAGEMENT"
+
+    # PLANNING: any write under a .claude/plans/ directory.
+    for p in write_paths:
+        if "/.claude/plans/" in _normalize_path(p).lower():
+            return "PLANNING"
+
+    return "UNCLASSIFIED"
+
+
 def main() -> None:
     project = os.environ.get("OBSERVABILITY_PROJECT", "")
 
@@ -87,6 +166,8 @@ def main() -> None:
         jsonl_self_reads = 0
         earliest_ts = None
         latest_ts = None
+        all_timestamps: list[str] = []
+        write_paths: list[str] = []
 
         for r in tool_call_results:
             p = r.get("payload", {})
@@ -113,8 +194,13 @@ def main() -> None:
                 elif ".jsonl" in file_path.lower() and ".claude" in file_path.lower():
                     jsonl_self_reads += 1
 
+            # Collect write targets for task classification
+            if tool_name in WRITING_TOOLS and file_path:
+                write_paths.append(file_path)
+
             ts = p.get("timestamp")
             if ts:
+                all_timestamps.append(ts)
                 if earliest_ts is None or ts < earliest_ts:
                     earliest_ts = ts
                 if latest_ts is None or ts > latest_ts:
@@ -123,7 +209,7 @@ def main() -> None:
         # Flag context saturation if thresholds exceeded
         context_saturation = claude_md_reads >= 10 or jsonl_self_reads >= 1
 
-        # Compute duration from earliest to latest tool call
+        # Compute duration from earliest to latest tool call (wall-clock span)
         duration = 0.0
         start_time = datetime.now(timezone.utc)
         if earliest_ts and latest_ts:
@@ -133,6 +219,12 @@ def main() -> None:
                 duration = (end_time - start_time).total_seconds()
             except (ValueError, TypeError):
                 pass
+
+        # Active duration excludes idle gaps >= threshold
+        active_duration = _compute_active_duration(all_timestamps)
+
+        # Heuristic task-type classification
+        task_type = _classify_session(len(tool_call_results), write_paths)
 
         # Capture latest git commit SHA for session-level linkage
         latest_commit_sha = None
@@ -151,6 +243,7 @@ def main() -> None:
             project=project,
             start_time=start_time,
             duration_seconds=duration,
+            active_duration_seconds=active_duration,
             total_tool_calls=len(tool_call_results),
             tool_call_breakdown=tool_breakdown,
             tool_failures=tool_failures,
@@ -163,6 +256,7 @@ def main() -> None:
             claude_md_reads=claude_md_reads,
             jsonl_self_reads=jsonl_self_reads,
             context_saturation=context_saturation,
+            task_type=task_type,
             latest_commit_sha=latest_commit_sha,
         )
 
