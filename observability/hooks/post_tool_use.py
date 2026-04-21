@@ -78,7 +78,19 @@ def build_input_summary(data: dict) -> str:
 
 
 def build_output_summary(data: dict) -> str | None:
-    """Build a truncated summary of tool output for semantic search."""
+    """Build a truncated summary of tool output for semantic search.
+
+    Tool responses come in many shapes depending on the Claude Code tool:
+    - str for Read (file contents) and similar
+    - dict for Write/Edit (filePath), Bash (stdout/stderr), AskUserQuestion (answer), etc.
+    - list/tuple for Glob and Grep (file lists, match lists)
+
+    Strategy: try a known-key set first for readable summaries; fall back to
+    a JSON dump of the whole response so no non-null payload is silently
+    dropped. Previously the function only matched a small set of keys and
+    returned None for Read/Bash/Glob/AskUserQuestion responses, which is
+    what caused the escalated "output_summary 100% null" gap.
+    """
     tool_response = data.get("tool_response")
     if tool_response is None:
         return None
@@ -86,14 +98,31 @@ def build_output_summary(data: dict) -> str | None:
     if isinstance(tool_response, str):
         return tool_response[:500] if tool_response else None
 
+    if isinstance(tool_response, (list, tuple)):
+        if not tool_response:
+            return None
+        try:
+            return json.dumps(tool_response, default=str)[:500]
+        except (TypeError, ValueError):
+            return str(tool_response)[:500]
+
     if isinstance(tool_response, dict):
         parts = []
-        # Capture key output fields depending on tool type
-        for key in ("output", "filePath", "content", "error", "result", "matches"):
+        # Known keys first, for readable summaries. Ordered by how distinctive
+        # the key is (filePath > content > error) so the output is legible
+        # even when multiple keys are present.
+        for key in ("filePath", "output", "stdout", "stderr", "error", "result",
+                    "matches", "files", "answer", "text", "content"):
             val = tool_response.get(key)
             if val:
                 parts.append(f"{key}: {str(val)[:150]}")
-        return " | ".join(parts)[:500] if parts else None
+        if parts:
+            return " | ".join(parts)[:500]
+        # Fallback: JSON-dump the whole dict so novel shapes still get captured.
+        try:
+            return json.dumps(tool_response, default=str)[:500]
+        except (TypeError, ValueError):
+            return str(tool_response)[:500]
 
     return str(tool_response)[:500]
 
