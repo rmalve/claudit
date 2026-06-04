@@ -251,6 +251,10 @@ def _load_projects(only: str | None) -> list[dict]:
 
 
 def main() -> int:
+    # Windows consoles default to cp1252, which can't encode the ✓ status glyphs
+    # printed below. Force UTF-8 so the sync runs to completion anywhere.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(
         description="Sync client/observability/ into registered external projects."
     )
