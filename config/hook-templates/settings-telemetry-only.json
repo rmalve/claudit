@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/anthropics/claude-code/main/settings.schema.json",
-  "$comment": "Telemetry-only hook configuration (no directive delivery). Use when you want data collection but are not yet ready to receive audit directives. Exec form with the ${CLAUDE_PROJECT_DIR} placeholder so hooks resolve from any working directory. Copy as-is into .claude/settings.json.",
+  "$comment": "Telemetry-only hook configuration (no directive delivery). Use when you want data collection but are not yet ready to receive audit directives. Shell form: a single command string per hook with the ${CLAUDE_PROJECT_DIR} placeholder so hooks resolve from any working directory and on any Claude Code version. Copy as-is into .claude/settings.json.",
 
   "hooks": {
     "PostToolUse": [
@@ -9,8 +9,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python",
-            "args": ["${CLAUDE_PROJECT_DIR}/observability/hooks/post_tool_use.py"],
+            "command": "python \"${CLAUDE_PROJECT_DIR}/observability/hooks/post_tool_use.py\" || true",
             "statusMessage": "Recording telemetry...",
             "timeout": 30,
             "async": true
@@ -23,8 +22,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python",
-            "args": ["${CLAUDE_PROJECT_DIR}/observability/hooks/session_end.py"],
+            "command": "python \"${CLAUDE_PROJECT_DIR}/observability/hooks/session_end.py\" || true",
             "statusMessage": "Finalizing session telemetry...",
             "timeout": 60
           }

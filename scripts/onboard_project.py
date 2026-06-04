@@ -119,15 +119,16 @@ AGENT_NAME="main"
 
 
 def _hook_script_path(hook_name: str, observability_path: str, use_absolute: bool) -> str:
-    """Build the hook script path for an exec-form ``args`` entry.
+    """Build the absolute hook script path embedded in a shell-form command.
 
     Default: anchored to ``${CLAUDE_PROJECT_DIR}`` — the project root Claude Code
     exports to hooks — so the hook resolves regardless of the shell's current
     working directory. A repo-relative path (the old form) breaks the moment a
     build step runs from a subdir (e.g. ``cd webapp``): every PreToolUse hook
-    then fails to find its script, exits non-zero, and denies the tool. Because
-    Claude Code expands ``${CLAUDE_PROJECT_DIR}`` itself (not the shell), exec
-    form works on any shell — no POSIX-vs-PowerShell expansion hazard on Windows.
+    then fails to find its script, exits non-zero, and denies the tool. Claude
+    Code expands the ``${CLAUDE_PROJECT_DIR}`` placeholder, and under the default
+    bash hook shell it is also exported as ``$CLAUDE_PROJECT_DIR``, so the path
+    resolves across Claude Code versions and shells.
 
     Absolute (legacy): resolve against the platform repo. Only works when the
     external project shares a filesystem with the platform.
@@ -149,13 +150,18 @@ def build_hook_config(observability_path: str, use_absolute: bool = False) -> st
 
     def cmd(hook_name: str, *, status: str, timeout: int | None = None,
             is_async: bool = False) -> dict:
-        # Exec form (command + args): Claude Code spawns the executable directly
-        # and expands the ${CLAUDE_PROJECT_DIR} placeholder in args itself, so the
-        # hook resolves from any working directory on any shell.
+        # Shell form (single command string). The most version-robust choice:
+        # exec form (command + args) is silently dropped by Claude Code runtimes
+        # that predate `args` support — they fall back to bare `python`, which
+        # then reads the hook event JSON from stdin and crashes. The absolute
+        # ${CLAUDE_PROJECT_DIR} path keeps the hook cwd-independent (survives a
+        # build step's `cd subdir`); `|| true` ensures it is never blocking even
+        # if the script is missing; each hook's own fail-open wrapper handles
+        # internal errors.
+        script = _hook_script_path(hook_name, observability_path, use_absolute)
         entry = {
             "type": "command",
-            "command": "python",
-            "args": [_hook_script_path(hook_name, observability_path, use_absolute)],
+            "command": f'python "{script}" || true',
             "statusMessage": status,
         }
         if timeout is not None:
