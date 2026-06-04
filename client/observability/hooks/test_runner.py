@@ -281,4 +281,13 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as _exc:  # fail-open: an observability hook must never block a tool or stop
+        try:
+            import os, sys
+            print(f"[observability hook {os.path.basename(__file__)}] suppressed error: {_exc}",
+                  file=sys.stderr)
+        except Exception:
+            pass
+        sys.exit(0)
