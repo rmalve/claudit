@@ -180,6 +180,7 @@ def main() -> None:
     event = ToolCallEvent(
         session_id=session_id,
         tool_name=tool_name,
+        agent=agent_name,
         file_path=file_path,
         command=extract_command(data),
         status=status,

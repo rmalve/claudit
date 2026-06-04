@@ -134,35 +134,67 @@ def _hook_command(hook_name: str, observability_path: str, use_absolute: bool) -
 
 
 def build_hook_config(observability_path: str, use_absolute: bool = False) -> str:
-    """Build the Claude Code hooks configuration."""
+    """Build the Claude Code hooks configuration.
+
+    Emits the structure Claude Code's settings schema requires: each hook-event
+    array holds *matcher groups*, and every group carries a nested ``hooks``
+    array of ``{"type": "command", ...}`` entries. A flat
+    ``{"command": ..., "description": ...}`` entry is rejected at load time with
+    "expected array, but received undefined" (the missing nested ``hooks`` array).
+    """
+
+    def cmd(hook_name: str, *, status: str, timeout: int | None = None,
+            is_async: bool = False) -> dict:
+        entry = {
+            "type": "command",
+            "command": _hook_command(hook_name, observability_path, use_absolute),
+            "statusMessage": status,
+        }
+        if timeout is not None:
+            entry["timeout"] = timeout
+        if is_async:
+            entry["async"] = True
+        return entry
+
     config = {
         "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": "*",
+                    "hooks": [
+                        cmd("version_archive.py",
+                            status="Archiving agent definition changes...", timeout=10),
+                        # directive_intake MUST be synchronous — async hooks
+                        # cannot return additionalContext to the agent.
+                        cmd("directive_intake.py",
+                            status="Checking for audit directives...", timeout=10),
+                    ],
+                }
+            ],
             "PostToolUse": [
                 {
-                    "command": _hook_command("post_tool_use.py", observability_path, use_absolute),
-                    "description": "Audit telemetry: captures tool calls, agent spawns, code changes to QDrant"
+                    "matcher": "Write|Edit",
+                    "hooks": [
+                        cmd("test_runner.py",
+                            status="Running tests + tracking bugs...", timeout=120),
+                    ],
                 },
                 {
-                    "command": _hook_command("test_runner.py", observability_path, use_absolute),
-                    "description": "Eval telemetry: runs tests and lint after .py file changes"
-                }
+                    "matcher": "*",
+                    "hooks": [
+                        cmd("post_tool_use.py",
+                            status="Recording telemetry...", timeout=30, is_async=True),
+                    ],
+                },
             ],
             "Stop": [
                 {
-                    "command": _hook_command("session_end.py", observability_path, use_absolute),
-                    "description": "Audit telemetry: aggregates session summary and flushes metrics"
+                    "hooks": [
+                        cmd("session_end.py",
+                            status="Finalizing session telemetry...", timeout=60),
+                    ],
                 }
             ],
-            "PreToolUse": [
-                {
-                    "command": _hook_command("version_archive.py", observability_path, use_absolute),
-                    "description": "Agent versioning: snapshots changed agent definitions before telemetry starts"
-                },
-                {
-                    "command": _hook_command("directive_intake.py", observability_path, use_absolute),
-                    "description": "Audit directives: reads pending directives from the Audit Director"
-                }
-            ]
         }
     }
 
@@ -170,43 +202,18 @@ def build_hook_config(observability_path: str, use_absolute: bool = False) -> st
 
 
 def build_hook_config_merge_snippet(observability_path: str, use_absolute: bool = False) -> str:
-    """Build a snippet showing how to merge hooks into existing settings."""
-    post = _hook_command("post_tool_use.py", observability_path, use_absolute)
-    test = _hook_command("test_runner.py", observability_path, use_absolute)
-    stop = _hook_command("session_end.py", observability_path, use_absolute)
-    version = _hook_command("version_archive.py", observability_path, use_absolute)
-    intake = _hook_command("directive_intake.py", observability_path, use_absolute)
+    """Build a snippet showing how to merge hooks into existing settings.
+
+    Derived from build_hook_config() so the two can never drift apart.
+    """
+    hooks_block = json.loads(build_hook_config(observability_path, use_absolute))["hooks"]
+    hooks_json = json.dumps(hooks_block, indent=2)
 
     return f"""
-If your project already has a .claude/settings.json, merge these hooks
-into the existing "hooks" object:
+If your project already has a .claude/settings.json, merge the entries below into
+the existing "hooks" object. Combine the per-event arrays — don't replace the file.
 
-  "PostToolUse": [
-    {{
-      "command": {json.dumps(post)},
-      "description": "Audit telemetry: captures tool calls, agent spawns, code changes"
-    }},
-    {{
-      "command": {json.dumps(test)},
-      "description": "Eval telemetry: runs tests and lint after .py file changes"
-    }}
-  ],
-  "Stop": [
-    {{
-      "command": {json.dumps(stop)},
-      "description": "Audit telemetry: aggregates session summary"
-    }}
-  ],
-  "PreToolUse": [
-    {{
-      "command": {json.dumps(version)},
-      "description": "Agent versioning: snapshots changed agent definitions"
-    }},
-    {{
-      "command": {json.dumps(intake)},
-      "description": "Audit directives: reads pending directives from the Audit Director"
-    }}
-  ]
+{hooks_json}
 
 Directive compliance is NOT a hook — agents invoke it explicitly:
   python -m observability.hooks.directive_compliance \\
@@ -231,6 +238,10 @@ def print_section(title: str, content: str) -> None:
 
 
 def main():
+    # Windows consoles default to cp1252, which can't encode the box-drawing and
+    # warning glyphs in the output sections. Force UTF-8 so onboarding runs anywhere.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(
         description="Onboard a new external project to the LLM Observability audit platform"
     )
