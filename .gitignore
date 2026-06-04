@@ -9,6 +9,7 @@ config/redis-acl.conf
 config/projects.json
 .env.audit
 .env.local
+scripts/verify_scrub.sh
 
 # ── Internal development notes ──
 docs/superpowers/
