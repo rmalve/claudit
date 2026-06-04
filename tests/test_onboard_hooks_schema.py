@@ -54,6 +54,29 @@ def _assert_valid_hook_block(hooks: dict) -> None:
                 assert isinstance(hook.get("command"), str) and hook["command"], (
                     "hook.command must be a non-empty string"
                 )
+                # Exec form keeps the script path in args (a list of strings).
+                args = hook.get("args")
+                if args is not None:
+                    assert isinstance(args, list) and all(isinstance(a, str) for a in args), (
+                        "hook.args must be a list of strings (exec form)"
+                    )
+                # Regression guard (2026-06-04): a hook's script path must be
+                # cwd-independent — ${CLAUDE_PROJECT_DIR}-anchored, {OBSERVABILITY_PATH}
+                # template placeholder, or absolute — so it resolves when a build
+                # step runs from a subdirectory (e.g. `cd webapp`). A bare relative
+                # path like 'observability/hooks/x.py' fails to resolve there, exits
+                # non-zero, and PreToolUse then denies every tool.
+                invocation = " ".join([hook["command"], *(args or [])])
+                if "observability/hooks/" in invocation or "observability\\hooks\\" in invocation:
+                    anchored = (
+                        "${CLAUDE_PROJECT_DIR}" in invocation
+                        or "{OBSERVABILITY_PATH}" in invocation
+                        or ":" in invocation                       # Windows absolute (C:\...)
+                        or invocation.lstrip().startswith("/")     # POSIX absolute
+                    )
+                    assert anchored, (
+                        f"hook script path must be cwd-independent, not bare-relative: {invocation}"
+                    )
 
 
 class TestBuildHookConfigSchema:
@@ -73,12 +96,25 @@ class TestBuildHookConfigSchema:
 
     def test_post_tool_use_records_telemetry(self):
         hooks = json.loads(onboard_project.build_hook_config("/fake/obs/path"))["hooks"]
-        commands = [
-            h["command"]
+        texts = [
+            " ".join([h["command"], *h.get("args", [])])
             for group in hooks["PostToolUse"]
             for h in group["hooks"]
         ]
-        assert any("post_tool_use" in c for c in commands)
+        assert any("post_tool_use" in t for t in texts)
+
+    def test_hook_paths_are_cwd_independent(self):
+        """Regression (2026-06-04): generated hook paths must be anchored to
+        ${CLAUDE_PROJECT_DIR}, never bare-relative — otherwise a build step run
+        from a subdirectory (cd webapp) blocks every tool via PreToolUse denial."""
+        hooks = json.loads(onboard_project.build_hook_config("/fake/obs/path"))["hooks"]
+        for event, groups in hooks.items():
+            for group in groups:
+                for h in group["hooks"]:
+                    text = " ".join([h["command"], *h.get("args", [])])
+                    assert "${CLAUDE_PROJECT_DIR}" in text, (
+                        f"{event} hook not anchored to CLAUDE_PROJECT_DIR: {text}"
+                    )
 
 
 class TestShippedTemplatesMatchSchema:

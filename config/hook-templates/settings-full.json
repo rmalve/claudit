@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/anthropics/claude-code/main/settings.schema.json",
-  "$comment": "Full audit hook configuration. Each hook-event array holds matcher groups, and every group carries a nested 'hooks' array — this is what Claude Code's schema requires. Replace {OBSERVABILITY_PATH} with the absolute path to the llm-observability repo.",
+  "$comment": "Full audit hook configuration. Exec form (command + args) with the ${CLAUDE_PROJECT_DIR} placeholder, which Claude Code expands to the project root regardless of the shell's working directory — so hooks resolve even when a build step runs from a subdirectory (e.g. cd webapp). No manual path substitution needed; copy as-is into .claude/settings.json.",
 
   "hooks": {
     "PreToolUse": [
@@ -9,13 +9,15 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"{OBSERVABILITY_PATH}/observability/hooks/version_archive.py\"",
+            "command": "python",
+            "args": ["${CLAUDE_PROJECT_DIR}/observability/hooks/version_archive.py"],
             "statusMessage": "Archiving agent definition changes...",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "python \"{OBSERVABILITY_PATH}/observability/hooks/directive_intake.py\"",
+            "command": "python",
+            "args": ["${CLAUDE_PROJECT_DIR}/observability/hooks/directive_intake.py"],
             "statusMessage": "Checking for audit directives...",
             "timeout": 10
           }
@@ -28,7 +30,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"{OBSERVABILITY_PATH}/observability/hooks/test_runner.py\"",
+            "command": "python",
+            "args": ["${CLAUDE_PROJECT_DIR}/observability/hooks/test_runner.py"],
             "statusMessage": "Running tests + tracking bugs...",
             "timeout": 120
           }
@@ -39,7 +42,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"{OBSERVABILITY_PATH}/observability/hooks/post_tool_use.py\"",
+            "command": "python",
+            "args": ["${CLAUDE_PROJECT_DIR}/observability/hooks/post_tool_use.py"],
             "statusMessage": "Recording telemetry...",
             "timeout": 30,
             "async": true
@@ -52,7 +56,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"{OBSERVABILITY_PATH}/observability/hooks/session_end.py\"",
+            "command": "python",
+            "args": ["${CLAUDE_PROJECT_DIR}/observability/hooks/session_end.py"],
             "statusMessage": "Finalizing session telemetry...",
             "timeout": 60
           }
