@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/anthropics/claude-code/main/settings.schema.json",
-  "$comment": "Telemetry-only hook configuration (no directive delivery). Use this when you want to collect data but are not yet ready to receive audit directives. Each hook-event array holds matcher groups with a nested 'hooks' array. Replace {OBSERVABILITY_PATH} with the absolute path to the llm-observability repo.",
+  "$comment": "Telemetry-only hook configuration (no directive delivery). Use when you want data collection but are not yet ready to receive audit directives. Exec form with the ${CLAUDE_PROJECT_DIR} placeholder so hooks resolve from any working directory. Copy as-is into .claude/settings.json.",
 
   "hooks": {
     "PostToolUse": [
@@ -9,7 +9,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"{OBSERVABILITY_PATH}/observability/hooks/post_tool_use.py\"",
+            "command": "python",
+            "args": ["${CLAUDE_PROJECT_DIR}/observability/hooks/post_tool_use.py"],
             "statusMessage": "Recording telemetry...",
             "timeout": 30,
             "async": true
@@ -22,7 +23,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"{OBSERVABILITY_PATH}/observability/hooks/session_end.py\"",
+            "command": "python",
+            "args": ["${CLAUDE_PROJECT_DIR}/observability/hooks/session_end.py"],
             "statusMessage": "Finalizing session telemetry...",
             "timeout": 60
           }

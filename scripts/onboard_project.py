@@ -118,19 +118,23 @@ AGENT_NAME="main"
 """
 
 
-def _hook_command(hook_name: str, observability_path: str, use_absolute: bool) -> str:
-    """Build a single hook invocation string.
+def _hook_script_path(hook_name: str, observability_path: str, use_absolute: bool) -> str:
+    """Build the hook script path for an exec-form ``args`` entry.
 
-    Relative (default): hooks resolve against the project's own observability/ copy.
-    Portable across machines; requires sync_client.py to distribute the package.
+    Default: anchored to ``${CLAUDE_PROJECT_DIR}`` — the project root Claude Code
+    exports to hooks — so the hook resolves regardless of the shell's current
+    working directory. A repo-relative path (the old form) breaks the moment a
+    build step runs from a subdir (e.g. ``cd webapp``): every PreToolUse hook
+    then fails to find its script, exits non-zero, and denies the tool. Because
+    Claude Code expands ``${CLAUDE_PROJECT_DIR}`` itself (not the shell), exec
+    form works on any shell — no POSIX-vs-PowerShell expansion hazard on Windows.
 
-    Absolute (legacy): hooks resolve against the platform repo. Only works when
-    the external project lives on the same filesystem as the platform.
+    Absolute (legacy): resolve against the platform repo. Only works when the
+    external project shares a filesystem with the platform.
     """
     if use_absolute:
-        hooks_path = Path(observability_path) / "observability" / "hooks"
-        return f"python \"{hooks_path / hook_name}\""
-    return f"python \"observability/hooks/{hook_name}\""
+        return str(Path(observability_path) / "observability" / "hooks" / hook_name)
+    return f"${{CLAUDE_PROJECT_DIR}}/observability/hooks/{hook_name}"
 
 
 def build_hook_config(observability_path: str, use_absolute: bool = False) -> str:
@@ -145,9 +149,13 @@ def build_hook_config(observability_path: str, use_absolute: bool = False) -> st
 
     def cmd(hook_name: str, *, status: str, timeout: int | None = None,
             is_async: bool = False) -> dict:
+        # Exec form (command + args): Claude Code spawns the executable directly
+        # and expands the ${CLAUDE_PROJECT_DIR} placeholder in args itself, so the
+        # hook resolves from any working directory on any shell.
         entry = {
             "type": "command",
-            "command": _hook_command(hook_name, observability_path, use_absolute),
+            "command": "python",
+            "args": [_hook_script_path(hook_name, observability_path, use_absolute)],
             "statusMessage": status,
         }
         if timeout is not None:
