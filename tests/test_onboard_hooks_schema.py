@@ -116,6 +116,25 @@ class TestBuildHookConfigSchema:
                         f"{event} hook not anchored to CLAUDE_PROJECT_DIR: {text}"
                     )
 
+    def test_generator_uses_shell_form(self):
+        """Regression (2026-06-04): the generator must emit SHELL form (a single
+        `command` string), not exec form (`command` + `args`). Exec form is
+        silently dropped by Claude Code runtimes that predate `args` support,
+        which then run bare `python` and crash on the event JSON piped to stdin."""
+        hooks = json.loads(onboard_project.build_hook_config("/fake/obs/path"))["hooks"]
+        for event, groups in hooks.items():
+            for group in groups:
+                for h in group["hooks"]:
+                    assert "args" not in h, (
+                        f"{event} hook uses exec form (args); shell form required: {h}"
+                    )
+                    assert h["command"].startswith("python "), (
+                        f"{event} hook must invoke python directly: {h['command']}"
+                    )
+                    assert "observability/hooks/" in h["command"], (
+                        f"{event} hook must embed the script path: {h['command']}"
+                    )
+
 
 class TestShippedTemplatesMatchSchema:
     """The config/hook-templates/*.json files must also be schema-valid —

@@ -1,5 +1,5 @@
 {
-  "$comment": "Merge snippet — add these matcher groups to your existing hooks object in .claude/settings.json. Combine the per-event arrays; do NOT replace your entire settings file. Exec form with the ${CLAUDE_PROJECT_DIR} placeholder so hooks resolve from any working directory (no manual path substitution).",
+  "$comment": "Merge snippet — add these matcher groups to your existing hooks object in .claude/settings.json. Combine the per-event arrays; do NOT replace your entire settings file. Shell form: a single command string per hook with the ${CLAUDE_PROJECT_DIR} placeholder so hooks resolve from any working directory and on any Claude Code version (no manual path substitution).",
 
   "hooks_to_merge": {
     "PreToolUse": [
@@ -8,15 +8,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python",
-            "args": ["${CLAUDE_PROJECT_DIR}/observability/hooks/version_archive.py"],
+            "command": "python \"${CLAUDE_PROJECT_DIR}/observability/hooks/version_archive.py\" || true",
             "statusMessage": "Archiving agent definition changes...",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "python",
-            "args": ["${CLAUDE_PROJECT_DIR}/observability/hooks/directive_intake.py"],
+            "command": "python \"${CLAUDE_PROJECT_DIR}/observability/hooks/directive_intake.py\" || true",
             "statusMessage": "Checking for audit directives...",
             "timeout": 10
           }
@@ -29,8 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python",
-            "args": ["${CLAUDE_PROJECT_DIR}/observability/hooks/test_runner.py"],
+            "command": "python \"${CLAUDE_PROJECT_DIR}/observability/hooks/test_runner.py\" || true",
             "statusMessage": "Running tests + tracking bugs...",
             "timeout": 120
           }
@@ -41,8 +38,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python",
-            "args": ["${CLAUDE_PROJECT_DIR}/observability/hooks/post_tool_use.py"],
+            "command": "python \"${CLAUDE_PROJECT_DIR}/observability/hooks/post_tool_use.py\" || true",
             "statusMessage": "Recording telemetry...",
             "timeout": 30,
             "async": true
@@ -55,8 +51,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python",
-            "args": ["${CLAUDE_PROJECT_DIR}/observability/hooks/session_end.py"],
+            "command": "python \"${CLAUDE_PROJECT_DIR}/observability/hooks/session_end.py\" || true",
             "statusMessage": "Finalizing session telemetry...",
             "timeout": 60
           }

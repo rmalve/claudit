@@ -358,20 +358,12 @@ def main() -> None:
         logger.info("  Files: %d created, %d modified, %d read",
                      summary.files_created, summary.files_modified, summary.files_read)
 
-        # Output for Claude Code hook system
-        output = {
-            "hookSpecificOutput": {
-                "hookEventName": "Stop",
-                "additionalContext": (
-                    f"Session telemetry: {summary.total_tool_calls} tool calls, "
-                    f"{summary.tool_failures} failures, "
-                    f"{summary.hallucinations_detected} hallucinations, "
-                    f"{summary.agents_spawned} agents spawned. "
-                    f"Duration: {summary.duration_seconds:.0f}s."
-                ),
-            }
-        }
-        print(json.dumps(output))
+        # NOTE: deliberately emit NO stdout / hookSpecificOutput on Stop.
+        # A passive observability hook must not feed text back to the agent it
+        # observes: additionalContext on a Stop event is injected as a new turn,
+        # which re-invokes the model. With no stop_hook_active guard, that recurs
+        # into an infinite Stop loop. The session summary is persisted to QDrant
+        # (add_session, above) and logged for debugging — that is the only output.
 
     except Exception as e:
         logger.error("Session end hook error: %s", e)
